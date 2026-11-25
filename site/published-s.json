@@ -24,7 +24,8 @@
   "s-35a-gem-v1",
   "s-36a-gem-v1",
   "s-37a-gem-v1",
-  "s-38a-gem-v1"
+  "s-38a-gem-v1",
+  "s-39a-gem-v1"
  ],
  "thumbs": {
   "s-28a-opus-v1": {
@@ -93,6 +94,10 @@
   },
   "s-38a-gem-v1": {
    "file": "thumbs/s-38a-gem-v1.jpg",
+   "kind": "real"
+  },
+  "s-39a-gem-v1": {
+   "file": "thumbs/s-39a-gem-v1.jpg",
    "kind": "real"
   },
   "s-26a-v1": {
