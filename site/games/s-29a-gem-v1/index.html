@@ -1,0 +1,3334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta name="robots" content="noindex,nofollow">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>こうしのごくごく</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #1f1710;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas.dragging { cursor: grabbing; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+"use strict";
+
+// ============================================================================
+// 1. MATH UTILITIES (Vec3, Mat4, Smooth Damping)
+// ============================================================================
+const PI = Math.PI, TAU = PI * 2;
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt));
+const rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+
+function v3(x = 0, y = 0, z = 0) { return [x, y, z]; }
+function v3Add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function v3Sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function v3Scale(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+function v3Dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function v3Cross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+function v3Len(a) { return Math.hypot(a[0], a[1], a[2]); }
+function v3Dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); }
+function v3Norm(a) { const l = v3Len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+function v3Lerp(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+
+function m4Identity() {
+  const m = new Float32Array(16);
+  m[0] = m[5] = m[10] = m[15] = 1;
+  return m;
+}
+function m4Mul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) {
+    const b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+    o[c * 4]     = a[0] * b0 + a[4] * b1 + a[8]  * b2 + a[12] * b3;
+    o[c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9]  * b2 + a[13] * b3;
+    o[c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+    o[c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+  }
+  return o;
+}
+function m4Translate(x, y, z) {
+  const m = m4Identity(); m[12] = x; m[13] = y; m[14] = z; return m;
+}
+function m4Scale(x, y, z) {
+  const m = m4Identity(); m[0] = x; m[5] = y; m[10] = z; return m;
+}
+function m4RotX(r) {
+  const m = m4Identity(), c = Math.cos(r), s = Math.sin(r);
+  m[5] = c; m[6] = s; m[9] = -s; m[10] = c; return m;
+}
+function m4RotY(r) {
+  const m = m4Identity(), c = Math.cos(r), s = Math.sin(r);
+  m[0] = c; m[2] = -s; m[8] = s; m[10] = c; return m;
+}
+function m4RotZ(r) {
+  const m = m4Identity(), c = Math.cos(r), s = Math.sin(r);
+  m[0] = c; m[1] = s; m[4] = -s; m[5] = c; return m;
+}
+function m4TRS(pos, rot, scale) {
+  let m = m4Translate(pos[0], pos[1], pos[2]);
+  if (rot[1]) m = m4Mul(m, m4RotY(rot[1]));
+  if (rot[0]) m = m4Mul(m, m4RotX(rot[0]));
+  if (rot[2]) m = m4Mul(m, m4RotZ(rot[2]));
+  if (scale[0] !== 1 || scale[1] !== 1 || scale[2] !== 1) m = m4Mul(m, m4Scale(scale[0], scale[1], scale[2]));
+  return m;
+}
+function m4Perspective(fovY, aspect, near, far) {
+  const f = 1 / Math.tan(fovY * 0.5);
+  const nf = 1 / (near - far);
+  const m = new Float32Array(16);
+  m[0] = f / aspect; m[5] = f; m[10] = (far + near) * nf; m[11] = -1; m[14] = 2 * far * near * nf;
+  return m;
+}
+function m4Ortho(l, r, b, t, n, f) {
+  const m = new Float32Array(16);
+  m[0] = 2 / (r - l); m[5] = 2 / (t - b); m[10] = -2 / (f - n); m[15] = 1;
+  m[12] = -(r + l) / (r - l); m[13] = -(t + b) / (t - b); m[14] = -(f + n) / (f - n);
+  return m;
+}
+function m4LookAt(eye, target, up) {
+  const z = v3Norm(v3Sub(eye, target));
+  const x = v3Norm(v3Cross(up, z));
+  const y = v3Cross(z, x);
+  const m = new Float32Array(16);
+  m[0] = x[0]; m[4] = x[1]; m[8]  = x[2]; m[12] = -v3Dot(x, eye);
+  m[1] = y[0]; m[5] = y[1]; m[9]  = y[2]; m[13] = -v3Dot(y, eye);
+  m[2] = z[0]; m[6] = z[1]; m[10] = z[2]; m[14] = -v3Dot(z, eye);
+  m[15] = 1;
+  return m;
+}
+function m4Invert(m) {
+  const o = new Float32Array(16);
+  const a00=m[0],a01=m[1],a02=m[2],a03=m[3],a10=m[4],a11=m[5],a12=m[6],a13=m[7],
+        a20=m[8],a21=m[9],a22=m[10],a23=m[11],a30=m[12],a31=m[13],a32=m[14],a33=m[15];
+  const b00=a00*a11-a01*a10,b01=a00*a12-a02*a10,b02=a00*a13-a03*a10,
+        b03=a01*a12-a02*a11,b04=a01*a13-a03*a11,b05=a02*a13-a03*a12,
+        b06=a20*a31-a21*a30,b07=a20*a32-a22*a30,b08=a20*a33-a23*a30,
+        b09=a21*a32-a22*a31,b10=a21*a33-a23*a31,b11=a22*a33-a23*a32;
+  let det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+  if (!det) return m4Identity();
+  det = 1 / det;
+  o[0]=(a11*b11-a12*b10+a13*b09)*det; o[1]=(a02*b10-a01*b11-a03*b09)*det;
+  o[2]=(a31*b05-a32*b04+a33*b03)*det; o[3]=(a22*b04-a21*b05-a23*b03)*det;
+  o[4]=(a12*b08-a10*b11-a13*b07)*det; o[5]=(a00*b11-a02*b08+a03*b07)*det;
+  o[6]=(a32*b02-a30*b05-a33*b01)*det; o[7]=(a20*b05-a22*b02+a23*b01)*det;
+  o[8]=(a10*b10-a11*b08+a13*b06)*det; o[9]=(a01*b08-a00*b10-a03*b06)*det;
+  o[10]=(a30*b04-a31*b02+a33*b00)*det; o[11]=(a21*b02-a20*b04-a23*b00)*det;
+  o[12]=(a11*b07-a10*b09-a12*b06)*det; o[13]=(a00*b09-a01*b07+a02*b06)*det;
+  o[14]=(a31*b01-a30*b03-a32*b00)*det; o[15]=(a20*b03-a21*b01+a22*b00)*det;
+  return o;
+}
+function m4NormalMat3(m) {
+  const a00=m[0],a01=m[1],a02=m[2], a10=m[4],a11=m[5],a12=m[6], a20=m[8],a21=m[9],a22=m[10];
+  const b01 = a22*a11 - a12*a21, b11 = -a22*a10 + a12*a20, b21 = a21*a10 - a11*a20;
+  let det = a00*b01 + a01*b11 + a02*b21;
+  if (Math.abs(det) < 1e-8) return new Float32Array([1,0,0, 0,1,0, 0,0,1]);
+  det = 1 / det;
+  return new Float32Array([
+    b01*det, (-a22*a01+a02*a21)*det, (a12*a01-a02*a11)*det,
+    b11*det, (a22*a00-a02*a20)*det, (-a12*a00+a02*a10)*det,
+    b21*det, (-a21*a00+a01*a20)*det, (a11*a00-a01*a10)*det
+  ]);
+}
+function m4TransformPoint(m, p) {
+  const x = p[0], y = p[1], z = p[2];
+  const w = m[3]*x + m[7]*y + m[11]*z + m[15] || 1;
+  return [
+    (m[0]*x + m[4]*y + m[8]*z + m[12]) / w,
+    (m[1]*x + m[5]*y + m[9]*z + m[13]) / w,
+    (m[2]*x + m[6]*y + m[10]*z + m[14]) / w
+  ];
+}
+
+// ============================================================================
+// 2. WEBGL2 INITIALIZATION & SHADERS
+// ============================================================================
+const canvas = document.getElementById("c");
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: false, powerPreference: "high-performance" });
+if (!gl) { document.body.style.background = "#e9d4b5"; return; }
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+function createProgram(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(p));
+  }
+  const uniforms = {};
+  const count = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < count; i++) {
+    const info = gl.getActiveUniform(p, i);
+    uniforms[info.name] = gl.getUniformLocation(p, info.name);
+  }
+  return { prog: p, u: uniforms };
+}
+
+// --- Shadow Map Shader ---
+const shadowProg = createProgram(`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+uniform mat4 uModel;
+uniform mat4 uLightVP;
+void main() {
+  gl_Position = uLightVP * uModel * vec4(aPos, 1.0);
+}`, `#version 300 es
+precision highp float;
+void main() {}`);
+
+// --- Main PBR + Subsurface + Fur Sheen + Shadow Shader ---
+const mainProg = createProgram(`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNorm;
+layout(location=2) in vec2 aUv;
+layout(location=3) in vec4 aCol;
+
+uniform mat4 uModel;
+uniform mat4 uViewProj;
+uniform mat4 uLightVP;
+uniform mat3 uNormalMat;
+
+out vec3 vWorldPos;
+out vec3 vNormal;
+out vec2 vUv;
+out vec4 vCol;
+out vec4 vLightSpacePos;
+
+void main() {
+  vec4 wp = uModel * vec4(aPos, 1.0);
+  vWorldPos = wp.xyz;
+  vNormal = normalize(uNormalMat * aNorm);
+  vUv = aUv;
+  vCol = aCol;
+  vLightSpacePos = uLightVP * wp;
+  gl_Position = uViewProj * wp;
+}`, `#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in vec3 vNormal;
+in vec2 vUv;
+in vec4 vCol;
+in vec4 vLightSpacePos;
+
+uniform vec3 uCamPos;
+uniform vec3 uLightDir;
+uniform vec3 uLightColor;
+uniform vec4 uBaseColor;
+uniform vec3 uEmissive;
+uniform float uRoughness;
+uniform float uMetallic;
+uniform float uFurSheen;
+uniform float uSubsurface;
+uniform float uUseTex;
+uniform vec2 uTexScale;
+uniform float uGlowPulse;
+uniform float uGlass;
+uniform float uShadowRecv;
+uniform float uSunWindow;
+uniform sampler2D uTex;
+uniform sampler2D uShadowMap;
+
+out vec4 fragColor;
+
+float calcShadow(vec4 lsPos, vec3 N, vec3 L) {
+  if (uShadowRecv < 0.5) return 1.0;
+  vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
+  if (proj.z > 1.0 || proj.x < 0.01 || proj.x > 0.99 || proj.y < 0.01 || proj.y > 0.99) return 1.0;
+  float ndl = max(dot(N, L), 0.0);
+  float bias = max(0.0022 * (1.0 - ndl), 0.0007);
+  vec2 texel = vec2(1.0 / 1024.0);
+  float sum = 0.0;
+  for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+      float d = texture(uShadowMap, proj.xy + vec2(float(x), float(y)) * texel).r;
+      sum += (proj.z - bias > d) ? 0.0 : 1.0;
+    }
+  }
+  return sum / 9.0;
+}
+
+vec3 acesTone(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+  vec3 N = normalize(vNormal);
+  if (!gl_FrontFacing) N = -N;
+  vec3 V = normalize(uCamPos - vWorldPos);
+  vec3 L = normalize(uLightDir);
+  vec3 H = normalize(V + L);
+
+  vec4 albedo = uBaseColor * vCol;
+  float rough = clamp(uRoughness, 0.04, 1.0);
+  if (uUseTex > 0.5) {
+    vec4 t = texture(uTex, vUv * uTexScale);
+    albedo.rgb *= mix(vec3(1.0), t.rgb, uUseTex);
+    rough = clamp(rough * mix(0.84, 1.16, t.a), 0.04, 1.0);
+  }
+  // Convert sRGB-ish base albedo to linear
+  vec3 baseLin = pow(max(albedo.rgb, vec3(0.001)), vec3(2.2));
+
+  float shadow = calcShadow(vLightSpacePos, N, L);
+  // Soften shadow slightly for cozy morning bounce
+  float shadowLit = mix(0.28, 1.0, shadow);
+
+  float NdotL = max(dot(N, L), 0.0);
+  float NdotV = max(dot(N, V), 0.001);
+  float NdotH = max(dot(N, H), 0.0);
+  float VdotH = max(dot(V, H), 0.0);
+
+  // GGX Specular
+  float a = rough * rough;
+  float a2 = a * a;
+  float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+  float D = a2 / (3.14159265 * denom * denom + 1e-5);
+  float k = (rough + 1.0) * (rough + 1.0) / 8.0;
+  float G = (NdotV / (NdotV * (1.0 - k) + k)) * (NdotL / (NdotL * (1.0 - k) + k));
+  vec3 F0 = mix(vec3(0.04), baseLin, uMetallic);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+  vec3 spec = (D * G * F) / (4.0 * NdotV * NdotL + 0.001);
+  vec3 kD = (1.0 - F) * (1.0 - uMetallic);
+
+  // Direct morning sunlight
+  vec3 direct = (kD * baseLin / 3.14159265 + spec) * uLightColor * NdotL * shadowLit;
+
+  // Subsurface scattering wrap (ears, muzzle, warm milk, rubber teat)
+  if (uSubsurface > 0.01) {
+    float wrapL = max(0.0, (dot(N, L) + 0.55) / 1.55);
+    float backTrans = pow(clamp(dot(V, -L + N * 0.35), 0.0, 1.0), 2.5);
+    vec3 sssTint = vec3(1.0, 0.56, 0.36);
+    direct += baseLin * sssTint * (wrapL * 0.25 + backTrans * 0.65) * uSubsurface * uLightColor * mix(0.45, 1.0, shadow);
+  }
+
+  // Velvet / Plush Calf Fur Rim Sheen
+  if (uFurSheen > 0.01) {
+    float rim = pow(1.0 - NdotV, 2.6);
+    float sunRim = smoothstep(-0.2, 0.8, dot(N, L)) * 0.65 + 0.35;
+    vec3 sheenCol = mix(baseLin * 1.45, vec3(1.0, 0.90, 0.72), 0.55);
+    direct += sheenCol * rim * uFurSheen * sunRim * 0.72 * mix(0.5, 1.0, shadow);
+  }
+
+  // Hemisphere Ambient: Pale morning sky above + Warm sunlit straw bounce below
+  float hemi = N.y * 0.5 + 0.5;
+  vec3 skyCol = vec3(0.56, 0.68, 0.80) * 0.62;
+  vec3 strawBounce = vec3(0.70, 0.50, 0.26) * 0.58;
+  vec3 ambient = baseLin * mix(strawBounce, skyCol, hemi) * (1.0 - uMetallic * 0.5);
+
+  // Gentle front-right barn doorway fill so calf face is always luminous & readable
+  vec3 fillDir = normalize(vec3(0.45, 0.35, 0.82));
+  float fillNdl = max(dot(N, fillDir), 0.0);
+  vec3 fillLight = (baseLin * 0.24 * fillNdl + pow(max(dot(N, normalize(V + fillDir)), 0.0), 24.0) * 0.08 * (1.0 - rough)) * vec3(1.0, 0.95, 0.86);
+
+  // Secondary morning window specular catchlight (especially pretty in calf's eyes & glass)
+  vec3 winDir = normalize(vec3(-0.55, 0.62, 0.56));
+  float winSpec = pow(max(dot(N, normalize(V + winDir)), 0.0), mix(16.0, 180.0, 1.0 - rough));
+  vec3 catchLight = vec3(1.0, 0.96, 0.88) * winSpec * (1.0 - rough) * (0.28 + uGlass * 0.9);
+
+  vec3 col = direct + ambient + fillLight + catchLight + uEmissive;
+
+  // Subtle sunlit diegetic glint when a prop invites touch (no arrows/icons!)
+  if (uGlowPulse > 0.001) {
+    float rimG = pow(1.0 - NdotV, 2.0) * 0.75 + 0.25;
+    col += vec3(1.0, 0.90, 0.62) * rimG * uGlowPulse * 0.34;
+  }
+
+  float alpha = albedo.a;
+  // Clear glass Fresnel reflectivity
+  if (uGlass > 0.5) {
+    float fres = pow(1.0 - NdotV, 3.0);
+    col += vec3(1.0, 0.97, 0.91) * (fres * 0.65 + winSpec * 0.85);
+    alpha = clamp(albedo.a + fres * 0.42 + winSpec * 0.38, 0.14, 0.88);
+  }
+
+  // Morning window sky glow override
+  if (uSunWindow > 0.5) {
+    col = mix(vec3(0.95, 0.98, 1.0), vec3(1.35, 1.24, 0.96), clamp(1.0 - vUv.y * 0.7, 0.0, 1.0));
+  }
+
+  // Gentle warm morning dust atmospheric haze for deep barn background
+  float dist = length(uCamPos - vWorldPos);
+  float fog = smoothstep(3.0, 9.5, dist) * 0.42;
+  vec3 fogCol = vec3(0.58, 0.48, 0.35);
+  col = mix(col, fogCol, fog * (1.0 - uSunWindow));
+
+  col = acesTone(col);
+  col = pow(col, vec3(1.0 / 2.2));
+  fragColor = vec4(col, alpha);
+}`);
+
+// --- Volumetric Sunbeam & Soft Particle Shader ---
+const fxProg = createProgram(`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec2 aUv;
+layout(location=2) in vec4 aCol;
+uniform mat4 uViewProj;
+out vec2 vUv;
+out vec4 vCol;
+void main() {
+  vUv = aUv;
+  vCol = aCol;
+  gl_Position = uViewProj * vec4(aPos, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec2 vUv;
+in vec4 vCol;
+uniform sampler2D uSprite;
+uniform float uMode; // 0 = radial sprite, 1 = sunbeam quad
+out vec4 fragColor;
+void main() {
+  if (uMode > 0.5) {
+    // Soft diagonal morning sunbeam shaft
+    float edgeX = sin(clamp(vUv.x, 0.0, 1.0) * 3.14159265);
+    float fadeY = smoothstep(0.0, 0.16, vUv.y) * smoothstep(1.0, 0.12, vUv.y);
+    float a = pow(edgeX, 1.7) * fadeY * vCol.a;
+    fragColor = vec4(vCol.rgb, a);
+  } else {
+    float mask = texture(uSprite, vUv).a;
+    fragColor = vec4(vCol.rgb, mask * vCol.a);
+  }
+}`);
+
+// ============================================================================
+// 3. SHADOW MAP FBO & PROCEDURAL TEXTURES
+// ============================================================================
+const SHADOW_SIZE = 1024;
+const shadowTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+const shadowFbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+gl.drawBuffers([gl.NONE]);
+gl.readBuffer(gl.NONE);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+function makeTextureFromCanvas(cnv, repeat = true) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cnv);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const wrap = repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+  return tex;
+}
+
+// Seeded pseudo-random for crisp deterministic textures
+function mulberry32(seed) {
+  return () => {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function buildWoodTexture() {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 512;
+  const ctx = c.getContext("2d");
+  const rng = mulberry32(101);
+  ctx.fillStyle = "#c9a074"; ctx.fillRect(0, 0, 512, 512);
+  // Organic grain lines
+  for (let y = 0; y < 512; y++) {
+    const plank = Math.floor(y / 128);
+    const shade = 0.92 + (plank % 2) * 0.08 + (rng() - 0.5) * 0.05;
+    for (let x = 0; x < 512; x += 4) {
+      const wave = Math.sin(x * 0.015 + plank * 2.1 + Math.sin(y * 0.06) * 2.2) * 0.5 + 0.5;
+      const g = Math.sin((y + wave * 12) * 0.42) * 0.5 + 0.5;
+      const r = clamp(Math.floor((182 + g * 38) * shade), 0, 255);
+      const gr = clamp(Math.floor((144 + g * 32) * shade), 0, 255);
+      const b = clamp(Math.floor((104 + g * 24) * shade), 0, 255);
+      ctx.fillStyle = `rgb(${r},${gr},${b})`;
+      ctx.fillRect(x, y, 4, 1);
+    }
+  }
+  // Subtle plank seams & fine scratches
+  ctx.fillStyle = "rgba(55,34,18,0.42)";
+  for (let p = 128; p < 512; p += 128) ctx.fillRect(0, p - 1, 512, 3);
+  for (let i = 0; i < 180; i++) {
+    ctx.fillStyle = rng() > 0.5 ? "rgba(255,235,205,0.08)" : "rgba(70,42,20,0.09)";
+    ctx.fillRect(rng() * 512, rng() * 512, 20 + rng() * 90, 1 + rng() * 2);
+  }
+  return makeTextureFromCanvas(c, true);
+}
+
+function buildFurTexture() {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 512;
+  const ctx = c.getContext("2d");
+  const rng = mulberry32(202);
+  ctx.fillStyle = "#efe6d8"; ctx.fillRect(0, 0, 512, 512);
+  // Soft warm mottling
+  for (let i = 0; i < 65; i++) {
+    const x = rng() * 512, y = rng() * 512, rad = 28 + rng() * 65;
+    const gr = ctx.createRadialGradient(x, y, 2, x, y, rad);
+    const warm = rng() > 0.45 ? "rgba(255,244,225,0.14)" : "rgba(186,144,104,0.13)";
+    gr.addColorStop(0, warm); gr.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, rad, 0, TAU); ctx.fill();
+  }
+  // Fine plush hair strokes
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < 4200; i++) {
+    const x = rng() * 512, y = rng() * 512;
+    const len = 7 + rng() * 14;
+    const ang = (rng() - 0.5) * 0.35 + PI * 0.5;
+    ctx.strokeStyle = rng() > 0.48 ? "rgba(255,246,232,0.22)" : "rgba(155,112,74,0.18)";
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    ctx.stroke();
+  }
+  return makeTextureFromCanvas(c, true);
+}
+
+function buildStrawTexture() {
+  const c = document.createElement("canvas"); c.width = 512; c.height = 512;
+  const ctx = c.getContext("2d");
+  const rng = mulberry32(303);
+  ctx.fillStyle = "#b58d4d"; ctx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2400; i++) {
+    const x = rng() * 512, y = rng() * 512;
+    const len = 18 + rng() * 44, ang = rng() * TAU;
+    const lum = rng();
+    ctx.strokeStyle = lum > 0.65 ? "rgba(246,216,138,0.55)" : (lum > 0.3 ? "rgba(196,154,78,0.5)" : "rgba(116,82,38,0.48)");
+    ctx.lineWidth = 1.2 + rng() * 2.2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    ctx.stroke();
+  }
+  return makeTextureFromCanvas(c, true);
+}
+
+function buildLinenTexture() {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 256;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#f7f2e9"; ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 256; i += 4) {
+    ctx.fillStyle = (i % 8 === 0) ? "rgba(210,196,178,0.34)" : "rgba(255,252,248,0.3)";
+    ctx.fillRect(0, i, 256, 2);
+    ctx.fillRect(i, 0, 2, 256);
+  }
+  return makeTextureFromCanvas(c, true);
+}
+
+function buildSpriteTexture() {
+  const c = document.createElement("canvas"); c.width = 128; c.height = 128;
+  const ctx = c.getContext("2d");
+  const gr = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
+  gr.addColorStop(0, "rgba(255,255,255,1)");
+  gr.addColorStop(0.38, "rgba(255,255,255,0.68)");
+  gr.addColorStop(0.75, "rgba(255,255,255,0.16)");
+  gr.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gr; ctx.fillRect(0, 0, 128, 128);
+  return makeTextureFromCanvas(c, false);
+}
+
+const TEX = {
+  wood: buildWoodTexture(),
+  fur: buildFurTexture(),
+  straw: buildStrawTexture(),
+  linen: buildLinenTexture(),
+  sprite: buildSpriteTexture()
+};
+
+// ============================================================================
+// 4. PROCEDURAL ORGANIC 3D MESH BUILDER
+// ============================================================================
+function uploadMesh(positions, normals, uvs, colors, indices) {
+  const vCount = positions.length / 3;
+  const data = new Float32Array(vCount * 12);
+  for (let i = 0; i < vCount; i++) {
+    const o = i * 12;
+    data[o]   = positions[i * 3];     data[o+1] = positions[i * 3 + 1]; data[o+2] = positions[i * 3 + 2];
+    data[o+3] = normals[i * 3];       data[o+4] = normals[i * 3 + 1];   data[o+5] = normals[i * 3 + 2];
+    data[o+6] = uvs[i * 2];           data[o+7] = uvs[i * 2 + 1];
+    data[o+8] = colors[i * 4];        data[o+9] = colors[i * 4 + 1];    data[o+10] = colors[i * 4 + 2]; data[o+11] = colors[i * 4 + 3];
+  }
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  const stride = 48;
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 24);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, stride, 32);
+  const ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  const useUint32 = vCount > 65535;
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, useUint32 ? new Uint32Array(indices) : new Uint16Array(indices), gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  return { vao, count: indices.length, type: useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT };
+}
+
+function computeSmoothNormals(pos, idx) {
+  const n = new Float32Array(pos.length);
+  for (let i = 0; i < idx.length; i += 3) {
+    const i0 = idx[i] * 3, i1 = idx[i + 1] * 3, i2 = idx[i + 2] * 3;
+    const ax = pos[i1] - pos[i0], ay = pos[i1 + 1] - pos[i0 + 1], az = pos[i1 + 2] - pos[i0 + 2];
+    const bx = pos[i2] - pos[i0], by = pos[i2 + 1] - pos[i0 + 1], bz = pos[i2 + 2] - pos[i0 + 2];
+    const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+    n[i0] += nx; n[i0 + 1] += ny; n[i0 + 2] += nz;
+    n[i1] += nx; n[i1 + 1] += ny; n[i1 + 2] += nz;
+    n[i2] += nx; n[i2 + 1] += ny; n[i2 + 2] += nz;
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const l = Math.hypot(n[i], n[i + 1], n[i + 2]) || 1;
+    n[i] /= l; n[i + 1] /= l; n[i + 2] /= l;
+  }
+  return n;
+}
+
+// Sculpted loft mesh along rings: each ring = { c:[x,y,z], rx, ry, col?:[r,g,b], fn?:(ang,x,y)=>[x,y,zOff,col] }
+// Rings advance along +Z or arbitrary spine; default cross section in XY plane
+function createLoft(rings, segs = 22, axis = "z", capStart = true, capEnd = true) {
+  const pos = [], uv = [], col = [], idx = [];
+  const rc = rings.length;
+  for (let r = 0; r < rc; r++) {
+    const ring = rings[r];
+    const v = r / Math.max(1, rc - 1);
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const a = u * TAU;
+      let cx = Math.cos(a) * ring.rx;
+      let cy = Math.sin(a) * ring.ry;
+      let cz = 0;
+      let c = ring.col || [1, 1, 1];
+      if (ring.fn) {
+        const res = ring.fn(a, cx, cy, c);
+        cx = res[0]; cy = res[1]; cz = res[2] || 0;
+        if (res[3]) c = res[3];
+      }
+      if (axis === "y") {
+        pos.push(ring.c[0] + cx, ring.c[1] + cz, ring.c[2] + cy);
+      } else {
+        pos.push(ring.c[0] + cx, ring.c[1] + cy, ring.c[2] + cz);
+      }
+      uv.push(u, v);
+      col.push(c[0], c[1], c[2], 1);
+    }
+  }
+  const stride = segs + 1;
+  const ascending = axis === "y"
+    ? (rings[rc - 1].c[1] >= rings[0].c[1])
+    : (rings[rc - 1].c[2] >= rings[0].c[2]);
+  const flipY = (axis === "y") ? ascending : !ascending;
+  for (let r = 0; r < rc - 1; r++) {
+    for (let s = 0; s < segs; s++) {
+      const a = r * stride + s, b = a + 1, c = a + stride, d = c + 1;
+      if (flipY) idx.push(a, c, b, b, c, d);
+      else idx.push(a, b, c, b, d, c);
+    }
+  }
+  if (capStart) {
+    const r0 = rings[0], ci = pos.length / 3;
+    const c0 = r0.col || [1, 1, 1];
+    pos.push(r0.c[0], r0.c[1], r0.c[2]); uv.push(0.5, 0); col.push(c0[0], c0[1], c0[2], 1);
+    for (let s = 0; s < segs; s++) {
+      if (flipY) idx.push(ci, s, s + 1);
+      else idx.push(ci, s + 1, s);
+    }
+  }
+  if (capEnd) {
+    const rl = rings[rc - 1], ci = pos.length / 3, base = (rc - 1) * stride;
+    const cl = rl.col || [1, 1, 1];
+    pos.push(rl.c[0], rl.c[1], rl.c[2]); uv.push(0.5, 1); col.push(cl[0], cl[1], cl[2], 1);
+    for (let s = 0; s < segs; s++) {
+      if (flipY) idx.push(ci, base + s + 1, base + s);
+      else idx.push(ci, base + s, base + s + 1);
+    }
+  }
+  const norm = computeSmoothNormals(pos, idx);
+  return uploadMesh(pos, norm, uv, col, idx);
+}
+
+function createSphere(rx = 1, ry = 1, rz = 1, stacks = 16, slices = 22, colFn = null, maxPhi = PI) {
+  const pos = [], norm = [], uv = [], col = [], idx = [];
+  for (let i = 0; i <= stacks; i++) {
+    const v = i / stacks, phi = v * maxPhi;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let j = 0; j <= slices; j++) {
+      const u = j / slices, th = u * TAU;
+      const nx = sp * Math.cos(th), ny = cp, nz = sp * Math.sin(th);
+      pos.push(nx * rx, ny * ry, nz * rz);
+      const nn = v3Norm([nx / rx, ny / ry, nz / rz]);
+      norm.push(nn[0], nn[1], nn[2]);
+      uv.push(u, v);
+      const c = colFn ? colFn(nx, ny, nz) : [1, 1, 1];
+      col.push(c[0], c[1], c[2], 1);
+    }
+  }
+  const st = slices + 1;
+  for (let i = 0; i < stacks; i++) {
+    for (let j = 0; j < slices; j++) {
+      const a = i * st + j, b = a + 1, c = a + st, d = c + 1;
+      idx.push(a, b, c, b, d, c);
+    }
+  }
+  return uploadMesh(pos, norm, uv, col, idx);
+}
+
+function createBox(w = 1, h = 1, d = 1, col = [1, 1, 1]) {
+  const hw = w * 0.5, hh = h * 0.5, hd = d * 0.5;
+  const faces = [
+    [[0,0,1],  [[-hw,-hh,hd],[hw,-hh,hd],[hw,hh,hd],[-hw,hh,hd]]],
+    [[0,0,-1], [[hw,-hh,-hd],[-hw,-hh,-hd],[-hw,hh,-hd],[hw,hh,-hd]]],
+    [[0,1,0],  [[-hw,hh,hd],[hw,hh,hd],[hw,hh,-hd],[-hw,hh,-hd]]],
+    [[0,-1,0], [[-hw,-hh,-hd],[hw,-hh,-hd],[hw,-hh,hd],[-hw,-hh,hd]]],
+    [[1,0,0],  [[hw,-hh,hd],[hw,-hh,-hd],[hw,hh,-hd],[hw,hh,hd]]],
+    [[-1,0,0], [[-hw,-hh,-hd],[-hw,-hh,hd],[-hw,hh,hd],[-hw,hh,-hd]]]
+  ];
+  const pos = [], norm = [], uv = [], cols = [], idx = [];
+  let vi = 0;
+  for (const [n, verts] of faces) {
+    const uvs = [[0,0],[1,0],[1,1],[0,1]];
+    for (let i = 0; i < 4; i++) {
+      pos.push(...verts[i]); norm.push(...n); uv.push(...uvs[i]); cols.push(col[0], col[1], col[2], 1);
+    }
+    idx.push(vi, vi+1, vi+2, vi, vi+2, vi+3); vi += 4;
+  }
+  return uploadMesh(pos, norm, uv, cols, idx);
+}
+
+function createCylinder(rBot, rTop, h, segs = 20, open = false, col = [1, 1, 1]) {
+  const rings = [];
+  const steps = 6;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const r = lerp(rBot, rTop, t);
+    rings.push({ c: [0, -h * 0.5 + t * h, 0], rx: r, ry: r, col });
+  }
+  return createLoft(rings, segs, "y", !open, !open);
+}
+
+// ============================================================================
+// 5. SCULPTED JERSEY CALF & BARN PROP MESHES
+// ============================================================================
+const MESH = {};
+
+// --- Jersey Calf Sculpted Torso (pale fawn top, creamy belly, warm shoulders) ---
+MESH.calfTorso = createLoft([
+  { c: [0, 0.04, -0.44], rx: 0.07, ry: 0.07, col: [0.85, 0.69, 0.50] },
+  { c: [0, 0.03, -0.36], rx: 0.175, ry: 0.185, col: [0.88, 0.72, 0.52] },
+  { c: [0, 0.01, -0.22], rx: 0.215, ry: 0.23,  col: [0.91, 0.76, 0.56],
+    fn: (a, x, y, c) => {
+      const belly = Math.sin(a) < 0 ? 1.07 : 0.96;
+      const cc = Math.sin(a) < -0.25 ? [0.96, 0.88, 0.75] : c;
+      return [x * 1.02, y * belly, 0, cc];
+    }
+  },
+  { c: [0, -0.01, -0.02], rx: 0.228, ry: 0.245, col: [0.91, 0.76, 0.56],
+    fn: (a, x, y, c) => {
+      const belly = Math.sin(a) < 0 ? 1.12 : 0.96;
+      const cc = Math.sin(a) < -0.2 ? [0.97, 0.90, 0.78] : c;
+      return [x, y * belly, 0, cc];
+    }
+  },
+  { c: [0, 0.02, 0.18], rx: 0.205, ry: 0.228, col: [0.89, 0.73, 0.53],
+    fn: (a, x, y, c) => {
+      const cc = Math.sin(a) < -0.35 ? [0.95, 0.87, 0.74] : c;
+      return [x, y, 0, cc];
+    }
+  },
+  { c: [0, 0.04, 0.34], rx: 0.165, ry: 0.185, col: [0.87, 0.71, 0.51] },
+  { c: [0, 0.06, 0.43], rx: 0.085, ry: 0.095, col: [0.86, 0.70, 0.51] }
+], 26, "z", true, true);
+
+// --- Sculpted Calf Neck ---
+MESH.calfNeck = createLoft([
+  { c: [0, -0.04, -0.04], rx: 0.135, ry: 0.155, col: [0.88, 0.72, 0.52] },
+  { c: [0, 0.08,  0.04],  rx: 0.118, ry: 0.132, col: [0.89, 0.74, 0.54] },
+  { c: [0, 0.20,  0.11],  rx: 0.105, ry: 0.114, col: [0.90, 0.75, 0.56] },
+  { c: [0, 0.30,  0.15],  rx: 0.094, ry: 0.098, col: [0.90, 0.75, 0.56] }
+], 20, "y", true, true);
+
+// --- Sculpted Adorable Jersey Calf Head (rounded forehead, soft cheeks, iconic pale mealy ring + dark velvety nose!) ---
+MESH.calfHead = createLoft([
+  // Back of skull
+  { c: [0, 0.03, -0.16], rx: 0.075, ry: 0.082, col: [0.88, 0.72, 0.53] },
+  // Broad gentle cranium & brow
+  { c: [0, 0.04, -0.07], rx: 0.132, ry: 0.138, col: [0.90, 0.75, 0.56],
+    fn: (a, x, y, c) => {
+      // Softly rounded forehead crown
+      const top = Math.sin(a) > 0.3 ? 1.05 : 0.98;
+      return [x, y * top, 0, c];
+    }
+  },
+  // Eye-socket & soft cheek fullness
+  { c: [0, 0.01, 0.03], rx: 0.134, ry: 0.125, col: [0.91, 0.76, 0.57],
+    fn: (a, x, y, c) => {
+      // Slight Jersey dish on forehead bridge, plump sweet cheeks
+      const dish = (Math.sin(a) > 0.65 && Math.abs(Math.cos(a)) < 0.45) ? 0.92 : 1.0;
+      const cheek = (Math.sin(a) < 0.15 && Math.sin(a) > -0.55) ? 1.05 : 1.0;
+      const darkEye = (Math.sin(a) > -0.05 && Math.sin(a) < 0.55 && Math.abs(Math.cos(a)) > 0.68)
+        ? [0.74, 0.57, 0.41] : c;
+      return [x * cheek, y * dish, 0, darkEye];
+    }
+  },
+  // Bridge of nose tapering softly
+  { c: [0, -0.035, 0.125], rx: 0.098, ry: 0.092, col: [0.88, 0.73, 0.55],
+    fn: (a, x, y, c) => {
+      const bridgeShade = Math.sin(a) > 0.4 ? [0.76, 0.59, 0.42] : c;
+      return [x, y, 0, bridgeShade];
+    }
+  },
+  // Iconic Jersey pale cream "mealy ring" around muzzle!
+  { c: [0, -0.068, 0.195], rx: 0.088, ry: 0.078, col: [0.96, 0.90, 0.80] },
+  // Broad velvety dark Jersey muzzle
+  { c: [0, -0.078, 0.245], rx: 0.082, ry: 0.066, col: [0.30, 0.24, 0.22],
+    fn: (a, x, y, c) => {
+      // Wide cute nostrils/nosepad shape
+      const pad = Math.sin(a) > -0.2 ? 1.04 : 0.90;
+      return [x * pad, y * 0.95, 0, c];
+    }
+  },
+  // Front tip of dark wet nose
+  { c: [0, -0.076, 0.272], rx: 0.048, ry: 0.036, col: [0.24, 0.19, 0.18] }
+], 28, "z", true, true);
+
+// --- Calf Lower Jaw (opens & pumps rhythmically while nursing!) ---
+MESH.calfJaw = createLoft([
+  { c: [0, 0.0, 0.0],   rx: 0.068, ry: 0.034, col: [0.92, 0.84, 0.73] },
+  { c: [0, -0.01, 0.07], rx: 0.064, ry: 0.032, col: [0.95, 0.89, 0.80] },
+  { c: [0, -0.012, 0.135], rx: 0.056, ry: 0.026, col: [0.84, 0.74, 0.66] },
+  { c: [0, -0.008, 0.16], rx: 0.032, ry: 0.015, col: [0.76, 0.66, 0.60] }
+], 18, "z", true, true);
+
+// --- Cute Pink Tongue (peeks out to lick milky nose!) ---
+MESH.calfTongue = createLoft([
+  { c: [0, 0, 0.0],    rx: 0.028, ry: 0.011, col: [0.92, 0.56, 0.60] },
+  { c: [0, 0.004, 0.04], rx: 0.030, ry: 0.010, col: [0.95, 0.60, 0.64] },
+  { c: [0, 0.014, 0.08], rx: 0.022, ry: 0.008, col: [0.96, 0.64, 0.68] },
+  { c: [0, 0.020, 0.098], rx: 0.009, ry: 0.005, col: [0.96, 0.64, 0.68] }
+], 14, "z", true, true);
+
+// --- Sculpted Cupped Jersey Ear (velvety peach inside, fawn fur outside, positive winding for both sides!) ---
+function buildCalfEar(sign = 1) {
+  const rings = [
+    { c: [0, 0, 0],            rx: 0.030, ry: 0.022, col: [0.87, 0.71, 0.52] },
+    { c: [0.065, 0.012, 0.01], rx: 0.052, ry: 0.036, col: [0.88, 0.72, 0.52] },
+    { c: [0.135, 0.018, 0.015], rx: 0.056, ry: 0.034, col: [0.86, 0.70, 0.50] },
+    { c: [0.195, 0.010, 0.006], rx: 0.038, ry: 0.020, col: [0.78, 0.60, 0.42] },
+    { c: [0.228, -0.002, -0.004], rx: 0.012, ry: 0.008, col: [0.68, 0.50, 0.34] }
+  ];
+  const segs = 18, pos = [], uv = [], col = [], idx = [];
+  for (let r = 0; r < rings.length; r++) {
+    const ring = rings[r];
+    const v = r / (rings.length - 1);
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs, a = u * TAU;
+      const ly = Math.cos(a) * ring.rx;
+      let lz = Math.sin(a) * ring.ry * 0.42;
+      const isFront = Math.sin(a) > 0;
+      if (isFront) lz -= Math.abs(Math.cos(a)) * 0.012;
+      else lz -= 0.006;
+      const c = (isFront && r >= 1 && r <= 3) ? [0.96, 0.80, 0.72] : ring.col;
+      pos.push(ring.c[0] * sign, ring.c[1] + ly, ring.c[2] + lz);
+      uv.push(u, v); col.push(c[0], c[1], c[2], 1);
+    }
+  }
+  const st = segs + 1;
+  for (let r = 0; r < rings.length - 1; r++) {
+    for (let s = 0; s < segs; s++) {
+      const a = r * st + s, b = a + 1, c = a + st, d = c + 1;
+      if (sign > 0) idx.push(a, b, c, b, d, c);
+      else idx.push(a, c, b, b, c, d);
+    }
+  }
+  const tip = pos.length / 3, last = rings[rings.length - 1], base = (rings.length - 1) * st;
+  pos.push((last.c[0] + 0.008) * sign, last.c[1], last.c[2]); uv.push(0.5, 1); col.push(0.68, 0.50, 0.34, 1);
+  for (let s = 0; s < segs; s++) {
+    if (sign > 0) idx.push(tip, base + s, base + s + 1);
+    else idx.push(tip, base + s + 1, base + s);
+  }
+  const norm = computeSmoothNormals(pos, idx);
+  return uploadMesh(pos, norm, uv, col, idx);
+}
+MESH.calfEarR = buildCalfEar(1);
+MESH.calfEarL = buildCalfEar(-1);
+
+// --- Calf Fluffy Forehead Tuft ---
+MESH.foreheadTuft = createSphere(0.055, 0.028, 0.055, 10, 14);
+
+// --- Calf Glossy Eye, Upper Hemisphere Eyelid, Eyelash ---
+MESH.eyeBall = createSphere(0.029, 0.030, 0.027, 16, 20, (nx, ny, nz) => {
+  if (nz > 0.64) return [0.04, 0.025, 0.02];
+  if (nz > 0.28) return [0.19, 0.11, 0.06];
+  return [0.92, 0.88, 0.82];
+});
+MESH.eyelid = createSphere(0.032, 0.0325, 0.030, 10, 16, null, PI * 0.54);
+MESH.lash = createBox(0.028, 0.0035, 0.006, [0.15, 0.10, 0.07]);
+
+// --- Calf Graceful Leg (Upper + Lower + Cute Knobby Knee + Dark Hoof) ---
+MESH.calfLegUpper = createLoft([
+  { c: [0, 0.02, 0],  rx: 0.078, ry: 0.088, col: [0.89, 0.74, 0.54] },
+  { c: [0, -0.10, 0], rx: 0.058, ry: 0.064, col: [0.87, 0.71, 0.52] },
+  { c: [0, -0.22, 0], rx: 0.044, ry: 0.048, col: [0.85, 0.69, 0.50] },
+  { c: [0, -0.27, 0.005], rx: 0.048, ry: 0.050, col: [0.86, 0.70, 0.51] } // cute knobby knee!
+], 16, "y", true, true);
+
+MESH.calfLegLower = createLoft([
+  { c: [0, 0.0, 0],    rx: 0.042, ry: 0.044, col: [0.85, 0.69, 0.50] },
+  { c: [0, -0.14, 0],  rx: 0.033, ry: 0.035, col: [0.82, 0.66, 0.48] },
+  { c: [0, -0.24, 0.006], rx: 0.036, ry: 0.038, col: [0.74, 0.58, 0.43] },
+  { c: [0, -0.275, 0.012], rx: 0.040, ry: 0.046, col: [0.26, 0.21, 0.19] }, // hoof top
+  { c: [0, -0.32, 0.016],  rx: 0.043, ry: 0.050, col: [0.21, 0.17, 0.15] }  // hoof sole
+], 16, "y", true, true);
+
+// --- Calf Tail with Fluffy Dark Switch ---
+MESH.calfTail = createLoft([
+  { c: [0, 0.0, 0.0],    rx: 0.022, ry: 0.022, col: [0.85, 0.69, 0.50] },
+  { c: [0, -0.14, -0.02], rx: 0.016, ry: 0.016, col: [0.82, 0.66, 0.48] },
+  { c: [0, -0.28, -0.03], rx: 0.014, ry: 0.014, col: [0.74, 0.56, 0.39] },
+  { c: [0, -0.36, -0.03], rx: 0.034, ry: 0.034, col: [0.42, 0.29, 0.20] },
+  { c: [0, -0.44, -0.03], rx: 0.026, ry: 0.026, col: [0.35, 0.24, 0.17] },
+  { c: [0, -0.49, -0.03], rx: 0.007, ry: 0.007, col: [0.35, 0.24, 0.17] }
+], 14, "y", true, true);
+
+// --- Milk Mustache Foam Blotches (attached to calf muzzle!) ---
+MESH.milkBlob = createSphere(1, 0.72, 0.55, 10, 14);
+
+// --- Nursing Bottle (Clear Glass Body with Embossed Ridges — NO numbers!) ---
+MESH.bottleGlass = createLoft([
+  { c: [0, 0.0, 0],   rx: 0.056, ry: 0.056 },
+  { c: [0, 0.012, 0], rx: 0.068, ry: 0.068 },
+  { c: [0, 0.055, 0], rx: 0.068, ry: 0.068 },
+  { c: [0, 0.060, 0], rx: 0.0705, ry: 0.0705 }, // tactile ridge 1
+  { c: [0, 0.065, 0], rx: 0.068, ry: 0.068 },
+  { c: [0, 0.115, 0], rx: 0.067, ry: 0.067 },
+  { c: [0, 0.120, 0], rx: 0.0695, ry: 0.0695 }, // tactile ridge 2
+  { c: [0, 0.125, 0], rx: 0.067, ry: 0.067 },
+  { c: [0, 0.175, 0], rx: 0.066, ry: 0.066 },
+  { c: [0, 0.205, 0], rx: 0.052, ry: 0.052 },
+  { c: [0, 0.228, 0], rx: 0.039, ry: 0.039 },
+  { c: [0, 0.245, 0], rx: 0.041, ry: 0.041 }
+], 28, "y", true, false);
+
+// Inner liquid volume inside bottle (unit height 0..1 mapped in shader/transform)
+MESH.bottleLiquid = createCylinder(0.061, 0.060, 1.0, 24, false);
+MESH.powderMound = createLoft([
+  { c: [0, 0.0, 0],  rx: 0.060, ry: 0.060 },
+  { c: [0, 0.22, 0], rx: 0.057, ry: 0.057 },
+  { c: [0, 0.65, 0], rx: 0.042, ry: 0.042 },
+  { c: [0, 1.0, 0],  rx: 0.012, ry: 0.012 }
+], 20, "y", true, true);
+
+// Soft Rubber Calf Nipple + Collar Cap
+MESH.bottleCollar = createLoft([
+  { c: [0, 0.0, 0],   rx: 0.045, ry: 0.045 },
+  { c: [0, 0.028, 0], rx: 0.045, ry: 0.045 },
+  { c: [0, 0.034, 0], rx: 0.039, ry: 0.039 }
+], 24, "y", true, true);
+
+MESH.bottleNipple = createLoft([
+  { c: [0, 0.0, 0],   rx: 0.035, ry: 0.035 },
+  { c: [0, 0.018, 0], rx: 0.022, ry: 0.022 },
+  { c: [0, 0.048, 0], rx: 0.0155, ry: 0.0155 },
+  { c: [0, 0.072, 0], rx: 0.0165, ry: 0.0165 }, // soft bulb tip
+  { c: [0, 0.088, 0], rx: 0.008, ry: 0.008 }
+], 20, "y", true, true);
+
+// --- Cream Enamel Warm Water Pitcher (with pouring lip & handle) ---
+MESH.pitcherBody = createLoft([
+  { c: [0, 0.0, 0],   rx: 0.072, ry: 0.072, col: [0.94, 0.91, 0.84] },
+  { c: [0, 0.025, 0], rx: 0.088, ry: 0.088, col: [0.97, 0.94, 0.87] },
+  { c: [0, 0.11, 0],  rx: 0.084, ry: 0.084, col: [0.98, 0.95, 0.89] },
+  { c: [0, 0.185, 0], rx: 0.068, ry: 0.068, col: [0.98, 0.95, 0.89] },
+  { c: [0, 0.222, 0], rx: 0.074, ry: 0.074, col: [0.35, 0.50, 0.62], // classic enamel blue rim!
+    fn: (a, x, y, c) => {
+      // Gentle pouring spout along +X
+      const spout = Math.max(0, Math.cos(a)) ** 4 * 0.028;
+      return [x + spout, y, spout * 0.15, c];
+    }
+  }
+], 28, "y", true, false);
+
+// Pitcher handle (curved tube)
+function buildCurvedHandle(radius, tubeR, startA, endA) {
+  const segs = 16, rSegs = 10, pos = [], uv = [], col = [], idx = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs, ang = lerp(startA, endA, t);
+    const cx = Math.cos(ang) * radius, cy = Math.sin(ang) * radius;
+    const tx = -Math.sin(ang), ty = Math.cos(ang);
+    for (let j = 0; j <= rSegs; j++) {
+      const a = (j / rSegs) * TAU;
+      const nx = Math.cos(ang) * Math.cos(a), ny = Math.sin(ang) * Math.cos(a), nz = Math.sin(a);
+      pos.push(cx + nx * tubeR, cy + ny * tubeR, nz * tubeR);
+      uv.push(t, j / rSegs); col.push(1, 1, 1, 1);
+    }
+  }
+  const st = rSegs + 1;
+  for (let i = 0; i < segs; i++) {
+    for (let j = 0; j < rSegs; j++) {
+      const a = i * st + j, b = a + 1, c = a + st, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const norm = computeSmoothNormals(pos, idx);
+  return uploadMesh(pos, norm, uv, col, idx);
+}
+MESH.pitcherHandle = buildCurvedHandle(0.068, 0.011, PI * 0.45, PI * 1.55);
+
+// --- Milk Replacer Powder Tin + Wooden Scoop ---
+MESH.powderTin = createLoft([
+  { c: [0, 0.0, 0],   rx: 0.074, ry: 0.074, col: [0.95, 0.85, 0.62] },
+  { c: [0, 0.012, 0], rx: 0.078, ry: 0.078, col: [0.96, 0.87, 0.64] },
+  { c: [0, 0.125, 0], rx: 0.078, ry: 0.078, col: [0.97, 0.89, 0.68] },
+  { c: [0, 0.138, 0], rx: 0.082, ry: 0.082, col: [0.85, 0.72, 0.50] }
+], 26, "y", true, true);
+MESH.powderSurface = createLoft([
+  { c: [0, 0.0, 0], rx: 0.074, ry: 0.074 },
+  { c: [0, 0.022, 0], rx: 0.048, ry: 0.048 },
+  { c: [0, 0.032, 0], rx: 0.012, ry: 0.012 }
+], 18, "y", true, true);
+MESH.scoopBowl = createLoft([
+  { c: [0, 0.0, 0],   rx: 0.012, ry: 0.012 },
+  { c: [0, 0.010, 0], rx: 0.027, ry: 0.027 },
+  { c: [0, 0.028, 0], rx: 0.030, ry: 0.030 }
+], 18, "y", true, true);
+MESH.scoopHandle = createCylinder(0.006, 0.0075, 0.125, 10);
+
+// --- Folded Soft Linen Towel ---
+MESH.towel = createLoft([
+  { c: [0, 0.0, -0.075],  rx: 0.095, ry: 0.026, col: [0.97, 0.95, 0.90] },
+  { c: [0, 0.004, -0.03], rx: 0.105, ry: 0.032, col: [0.99, 0.97, 0.93] },
+  { c: [0, 0.004,  0.03], rx: 0.105, ry: 0.032, col: [0.99, 0.97, 0.93] },
+  { c: [0, 0.0,   0.075], rx: 0.095, ry: 0.026, col: [0.96, 0.93, 0.87] }
+], 20, "z", true, true);
+
+// --- Soft Wooden Grooming Brush ---
+MESH.brushBack = createLoft([
+  { c: [0, 0, -0.088], rx: 0.022, ry: 0.012 },
+  { c: [0, 0, -0.055], rx: 0.048, ry: 0.017 },
+  { c: [0, 0,  0.0],   rx: 0.054, ry: 0.019 },
+  { c: [0, 0,  0.055], rx: 0.048, ry: 0.017 },
+  { c: [0, 0,  0.088], rx: 0.022, ry: 0.012 }
+], 20, "z", true, true);
+MESH.brushBristles = createLoft([
+  { c: [0, 0, -0.078], rx: 0.018, ry: 0.018 },
+  { c: [0, 0, -0.045], rx: 0.043, ry: 0.021 },
+  { c: [0, 0,  0.0],   rx: 0.048, ry: 0.022 },
+  { c: [0, 0,  0.045], rx: 0.043, ry: 0.021 },
+  { c: [0, 0,  0.078], rx: 0.018, ry: 0.018 }
+], 18, "z", true, true);
+
+// --- Brass Barn Bell ---
+MESH.bell = createLoft([
+  { c: [0, 0.085, 0], rx: 0.014, ry: 0.014 },
+  { c: [0, 0.072, 0], rx: 0.032, ry: 0.032 },
+  { c: [0, 0.035, 0], rx: 0.042, ry: 0.042 },
+  { c: [0, 0.008, 0], rx: 0.058, ry: 0.058 },
+  { c: [0, 0.0, 0],   rx: 0.062, ry: 0.062 }
+], 22, "y", true, false);
+
+// --- Galvanized Rustic Milk Can (background barn prop) ---
+MESH.milkCan = createLoft([
+  { c: [0, 0.0, 0],   rx: 0.16, ry: 0.16 },
+  { c: [0, 0.36, 0],  rx: 0.155, ry: 0.155 },
+  { c: [0, 0.48, 0],  rx: 0.095, ry: 0.095 },
+  { c: [0, 0.56, 0],  rx: 0.098, ry: 0.098 },
+  { c: [0, 0.58, 0],  rx: 0.108, ry: 0.108 },
+  { c: [0, 0.60, 0],  rx: 0.095, ry: 0.095 }
+], 22, "y", true, true);
+
+// --- Butterfly Wing, Sparrow, Flower Crown, Water Stream, Primitive Helpers ---
+MESH.box = createBox(1, 1, 1);
+MESH.sphere = createSphere(1, 1, 1, 12, 16);
+MESH.cyl = createCylinder(1, 1, 1, 18);
+MESH.stream = createCylinder(0.011, 0.008, 1.0, 12);
+
+// Sculpted Butterfly Wings (positive winding for both left & right!)
+function buildWingMesh(sign = 1) {
+  const pos = [
+    0, 0, 0,
+    0.042 * sign, 0.028, 0.018,
+    0.062 * sign, 0.005, 0.008,
+    0.046 * sign, -0.025, -0.015,
+    0.016 * sign, -0.022, -0.018
+  ];
+  const uv = [0,0.5, 0.6,1, 1,0.6, 0.7,0, 0.2,0.1];
+  const col = [
+    1.0, 0.88, 0.52, 1,
+    1.0, 0.96, 0.76, 1,
+    1.0, 0.93, 0.64, 1,
+    0.98, 0.86, 0.56, 1,
+    0.96, 0.82, 0.48, 1
+  ];
+  const idx = sign > 0 ? [0,1,2, 0,2,3, 0,3,4] : [0,2,1, 0,3,2, 0,4,3];
+  const norm = computeSmoothNormals(pos, idx);
+  return uploadMesh(pos, norm, uv, col, idx);
+}
+MESH.wingR = buildWingMesh(1);
+MESH.wingL = buildWingMesh(-1);
+
+// --- Batched 3D Golden Straw Field (550+ individual sunlit 3D straw blades!) ---
+function buildStrawField() {
+  const rng = mulberry32(777);
+  const pos = [], norm = [], uv = [], col = [], idx = [];
+  let vi = 0;
+  for (let i = 0; i < 580; i++) {
+    const x = (rng() - 0.5) * 3.8;
+    const z = -2.0 + rng() * 2.65;
+    const y = 0.01 + Math.max(0, 0.08 - Math.hypot(x * 0.45, (z + 0.5) * 0.5) * 0.06) + rng() * 0.03;
+    const len = 0.14 + rng() * 0.22;
+    const w = 0.008 + rng() * 0.007;
+    const yaw = rng() * TAU;
+    const tilt = 0.06 + rng() * 0.34;
+    const dx = Math.cos(yaw) * len, dz = Math.sin(yaw) * len, dy = Math.sin(tilt) * len * 0.55;
+    const px = -Math.sin(yaw) * w, pz = Math.cos(yaw) * w;
+    const tone = 0.78 + rng() * 0.30;
+    const c = [0.94 * tone, 0.78 * tone, 0.42 * tone, 1];
+    // Curved 2-segment blade
+    const x0 = x - dx * 0.4, y0 = y, z0 = z - dz * 0.4;
+    const x1 = x + dx * 0.1, y1 = y + dy * 0.65, z1 = z + dz * 0.1;
+    const x2 = x + dx * 0.6, y2 = y + dy * 0.45, z2 = z + dz * 0.6;
+    pos.push(
+      x0 - px, y0, z0 - pz,  x0 + px, y0, z0 + pz,
+      x1 - px * 0.85, y1, z1 - pz * 0.85,  x1 + px * 0.85, y1, z1 + pz * 0.85,
+      x2, y2, z2
+    );
+    for (let k = 0; k < 5; k++) {
+      norm.push(0, 1, 0); uv.push(k * 0.25, 0.5); col.push(...c);
+    }
+    idx.push(vi, vi+1, vi+2, vi+1, vi+3, vi+2, vi+2, vi+3, vi+4);
+    vi += 5;
+  }
+  const n = computeSmoothNormals(pos, idx);
+  return uploadMesh(pos, n, uv, col, idx);
+}
+MESH.strawField = buildStrawField();
+
+// Dynamic FX buffer for particles & volumetric sunbeams
+const MAX_FX_QUADS = 360;
+const fxVao = gl.createVertexArray();
+gl.bindVertexArray(fxVao);
+const fxVbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, fxVbo);
+const fxData = new Float32Array(MAX_FX_QUADS * 4 * 9);
+gl.bufferData(gl.ARRAY_BUFFER, fxData.byteLength, gl.DYNAMIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 36, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 36, 12);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 36, 20);
+const fxIdx = new Uint16Array(MAX_FX_QUADS * 6);
+for (let i = 0; i < MAX_FX_QUADS; i++) {
+  fxIdx[i*6] = i*4; fxIdx[i*6+1] = i*4+1; fxIdx[i*6+2] = i*4+2;
+  fxIdx[i*6+3] = i*4; fxIdx[i*6+4] = i*4+2; fxIdx[i*6+5] = i*4+3;
+}
+const fxIbo = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, fxIbo);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, fxIdx, gl.STATIC_DRAW);
+gl.bindVertexArray(null);
+
+// ============================================================================
+// 6. PROCEDURAL WEB AUDIO ENGINE (Warm, Organic Barn Foley & Calf Voices)
+// ============================================================================
+const SFX = {
+  ctx: null,
+  noiseBuf: null,
+  ambienceStarted: false,
+  lastBrushTime: 0,
+  lastShakeTime: 0,
+  lastPetTime: 0,
+
+  init() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      const sr = this.ctx.sampleRate;
+      this.noiseBuf = this.ctx.createBuffer(1, sr * 2, sr);
+      const d = this.noiseBuf.getChannelData(0);
+      let b0 = 0, b1 = 0, b2 = 0;
+      for (let i = 0; i < d.length; i++) {
+        const w = Math.random() * 2 - 1;
+        b0 = 0.997 * b0 + w * 0.029;
+        b1 = 0.985 * b1 + w * 0.032;
+        b2 = 0.950 * b2 + w * 0.048;
+        d[i] = (b0 + b1 + b2 + w * 0.14) * 0.35;
+      }
+    }
+    if (this.ctx.state === "suspended") this.ctx.resume();
+    if (!this.ambienceStarted && this.ctx) {
+      this.ambienceStarted = true;
+      this.startAmbience();
+    }
+  },
+
+  startAmbience() {
+    const c = this.ctx;
+    // Ultra-soft warm morning breeze in barn
+    const src = c.createBufferSource();
+    src.buffer = this.noiseBuf; src.loop = true;
+    const flt = c.createBiquadFilter();
+    flt.type = "lowpass"; flt.frequency.value = 340;
+    const g = c.createGain(); g.gain.value = 0.035;
+    src.connect(flt); flt.connect(g); g.connect(c.destination);
+    src.start();
+  },
+
+  // Sweet distant morning bird chirp
+  birdChirp(bright = false) {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    const notes = bright ? [2450, 3100, 2750] : [1850, 2320];
+    notes.forEach((f, idx) => {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = "sine";
+      const st = t + idx * 0.11;
+      o.frequency.setValueAtTime(f * 0.88, st);
+      o.frequency.exponentialRampToValueAtTime(f * 1.12, st + 0.05);
+      o.frequency.exponentialRampToValueAtTime(f * 0.95, st + 0.10);
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.linearRampToValueAtTime(bright ? 0.055 : 0.018, st + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.11);
+      o.connect(g); g.connect(c.destination);
+      o.start(st); o.stop(st + 0.12);
+    });
+  },
+
+  // Baby Jersey calf cute soft "muu~" (mode: 'curious', 'eager', 'happy', 'sigh')
+  calfMoo(mode = "curious") {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    const dur = mode === "sigh" ? 0.42 : (mode === "eager" ? 0.62 : 0.54);
+    const o1 = c.createOscillator(), o2 = c.createOscillator();
+    o1.type = "sawtooth"; o2.type = "triangle";
+    const baseF = mode === "eager" ? 295 : (mode === "happy" ? 315 : (mode === "sigh" ? 235 : 265));
+    o1.frequency.setValueAtTime(baseF * 0.88, t);
+    if (mode === "curious") {
+      o1.frequency.linearRampToValueAtTime(baseF * 1.06, t + dur * 0.65);
+      o1.frequency.linearRampToValueAtTime(baseF * 1.14, t + dur);
+    } else if (mode === "eager") {
+      o1.frequency.linearRampToValueAtTime(baseF * 1.18, t + dur * 0.45);
+      o1.frequency.linearRampToValueAtTime(baseF * 0.96, t + dur);
+    } else if (mode === "happy") {
+      o1.frequency.linearRampToValueAtTime(baseF * 1.22, t + dur * 0.35);
+      o1.frequency.linearRampToValueAtTime(baseF * 1.02, t + dur);
+    } else {
+      o1.frequency.linearRampToValueAtTime(baseF * 0.82, t + dur);
+    }
+    o2.frequency.setValueAtTime(baseF * 1.76, t);
+    o2.frequency.linearRampToValueAtTime(baseF * 1.95, t + dur * 0.5);
+
+    // Warm nasal baby-calf formant filter
+    const f1 = c.createBiquadFilter();
+    f1.type = "bandpass"; f1.Q.value = 3.2;
+    f1.frequency.setValueAtTime(520, t);
+    f1.frequency.linearRampToValueAtTime(760, t + dur * 0.45);
+    f1.frequency.linearRampToValueAtTime(480, t + dur);
+
+    const lp = c.createBiquadFilter();
+    lp.type = "lowpass"; lp.frequency.value = 1150;
+
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(mode === "sigh" ? 0.055 : 0.095, t + 0.08);
+    g.gain.setValueAtTime(mode === "sigh" ? 0.045 : 0.082, t + dur * 0.72);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    const g2 = c.createGain(); g2.gain.value = 0.28;
+    o1.connect(f1); o2.connect(g2); g2.connect(f1);
+    f1.connect(lp); lp.connect(g); g.connect(c.destination);
+    o1.start(t); o2.start(t); o1.stop(t + dur + 0.02); o2.stop(t + dur + 0.02);
+  },
+
+  // Signature adorable "Goku!" warm nursing gulp
+  gulp(pitchBias = 0) {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    // Soft wet suckle transient
+    const ns = c.createBufferSource(); ns.buffer = this.noiseBuf;
+    const nf = c.createBiquadFilter(); nf.type = "bandpass"; nf.frequency.value = 1650; nf.Q.value = 2.5;
+    const ng = c.createGain();
+    ng.gain.setValueAtTime(0.001, t);
+    ng.gain.linearRampToValueAtTime(0.055, t + 0.025);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.085);
+    ns.connect(nf); nf.connect(ng); ng.connect(c.destination);
+    ns.start(t); ns.stop(t + 0.09);
+
+    // Warm hollow "goku" swallow pitch arc
+    const o = c.createOscillator(); o.type = "sine";
+    const f0 = 195 + pitchBias * 38 + rand(-12, 12);
+    o.frequency.setValueAtTime(f0 * 0.75, t + 0.03);
+    o.frequency.exponentialRampToValueAtTime(f0 * 1.48, t + 0.095);
+    o.frequency.exponentialRampToValueAtTime(f0 * 0.85, t + 0.185);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t + 0.025);
+    g.gain.linearRampToValueAtTime(0.16, t + 0.065);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.20);
+    o.connect(g); g.connect(c.destination);
+    o.start(t + 0.02); o.stop(t + 0.22);
+
+    // Subtle bottle bubble pop
+    const b = c.createOscillator(); b.type = "sine";
+    const bf = 480 + rand(0, 220);
+    b.frequency.setValueAtTime(bf, t + 0.09);
+    b.frequency.exponentialRampToValueAtTime(bf * 1.8, t + 0.145);
+    const bg = c.createGain();
+    bg.gain.setValueAtTime(0.0001, t + 0.09);
+    bg.gain.linearRampToValueAtTime(0.035, t + 0.105);
+    bg.gain.exponentialRampToValueAtTime(0.0001, t + 0.155);
+    b.connect(bg); bg.connect(c.destination);
+    b.start(t + 0.09); b.stop(t + 0.16);
+  },
+
+  // Milk powder soft sprinkle puff
+  powderPour() {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    const s = c.createBufferSource(); s.buffer = this.noiseBuf;
+    const f = c.createBiquadFilter(); f.type = "bandpass"; f.frequency.setValueAtTime(2400, t); f.Q.value = 1.2;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.09, t + 0.07);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    s.connect(f); f.connect(g); g.connect(c.destination);
+    s.start(t); s.stop(t + 0.44);
+  },
+
+  // Warm water pouring tick (rising pitch as bottle fills!)
+  waterDrop(fillRatio) {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    const o = c.createOscillator(); o.type = "sine";
+    const f = 320 + fillRatio * 340 + rand(-35, 45);
+    o.frequency.setValueAtTime(f * 0.82, t);
+    o.frequency.exponentialRampToValueAtTime(f * 1.45, t + 0.065);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.055, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.075);
+    o.connect(g); g.connect(c.destination);
+    o.start(t); o.stop(t + 0.08);
+  },
+
+  // Nipple cap snug rubber pop
+  capPop() {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    const o = c.createOscillator(); o.type = "sine";
+    o.frequency.setValueAtTime(240, t);
+    o.frequency.exponentialRampToValueAtTime(640, t + 0.055);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.14, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.085);
+    o.connect(g); g.connect(c.destination);
+    o.start(t); o.stop(t + 0.09);
+  },
+
+  // Bottle liquid slosh while shaking
+  shakeSlosh(strength = 1) {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastShakeTime < 0.11) return;
+    this.lastShakeTime = now;
+    const c = this.ctx;
+    const s = c.createBufferSource(); s.buffer = this.noiseBuf;
+    const f = c.createBiquadFilter(); f.type = "bandpass";
+    f.frequency.setValueAtTime(620 + rand(0, 320), now);
+    f.frequency.exponentialRampToValueAtTime(1180, now + 0.09);
+    f.Q.value = 2.6;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.09 * clamp(strength, 0.3, 1.1), now + 0.025);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+    s.connect(f); f.connect(g); g.connect(c.destination);
+    s.start(now); s.stop(now + 0.14);
+  },
+
+  // Soft brush or linen wipe stroke
+  softStroke(isCloth = false) {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastBrushTime < 0.16) return;
+    this.lastBrushTime = now;
+    const c = this.ctx;
+    const s = c.createBufferSource(); s.buffer = this.noiseBuf;
+    const f = c.createBiquadFilter(); f.type = "bandpass";
+    f.frequency.value = isCloth ? 1150 : 1850;
+    f.Q.value = 1.1;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(isCloth ? 0.055 : 0.068, now + 0.045);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.19);
+    s.connect(f); f.connect(g); g.connect(c.destination);
+    s.start(now); s.stop(now + 0.21);
+  },
+
+  // Warm brass barn bell chime
+  barnBell(tiny = false) {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    const base = tiny ? 1320 : 680;
+    [1, 2.02, 2.98, 4.16].forEach((mult, idx) => {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = "sine"; o.frequency.value = base * mult;
+      const amp = (tiny ? 0.032 : 0.065) / (idx + 1);
+      const dec = (tiny ? 0.45 : 1.35) / (idx * 0.55 + 1);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(amp, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      o.connect(g); g.connect(c.destination);
+      o.start(t); o.stop(t + dec + 0.03);
+    });
+  },
+
+  // Straw rustle / calf playful hop
+  strawStep() {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    const s = c.createBufferSource(); s.buffer = this.noiseBuf;
+    const f = c.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 1900;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.055, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    s.connect(f); f.connect(g); g.connect(c.destination);
+    s.start(t); s.stop(t + 0.17);
+  },
+
+  // Tender acoustic kalimba / harp sparkle for joyful milestones
+  warmChime(notes = [523.25, 659.25, 783.99, 1046.5]) {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime;
+    notes.forEach((f, idx) => {
+      const st = t + idx * 0.095;
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = "triangle"; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.linearRampToValueAtTime(0.062, st + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.72);
+      o.connect(g); g.connect(c.destination);
+      o.start(st); o.stop(st + 0.75);
+    });
+  },
+
+  // Gentle petting murmur
+  petPurr() {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastPetTime < 0.75) return;
+    this.lastPetTime = now;
+    this.calfMoo("sigh");
+  }
+};
+
+// ============================================================================
+// 7. PARTICLE SYSTEM (Dust Motes, Steam, Powder, Water Splash, Milk Bubbles, Sparkles, Straw)
+// ============================================================================
+const particles = [];
+function spawnParticle(opts) {
+  if (particles.length >= 260) particles.shift();
+  particles.push({
+    x: opts.x, y: opts.y, z: opts.z,
+    vx: opts.vx || 0, vy: opts.vy || 0, vz: opts.vz || 0,
+    size: opts.size || 0.03,
+    grow: opts.grow || 0,
+    life: 0, maxLife: opts.maxLife || 1.2,
+    r: opts.r ?? 1, g: opts.g ?? 0.96, b: opts.b ?? 0.86, a: opts.a ?? 0.65,
+    gravity: opts.gravity ?? 0,
+    drag: opts.drag ?? 0.98,
+    additive: !!opts.additive
+  });
+}
+
+// Persistent ambient golden dust motes floating in morning sunbeams
+const dustMotes = [];
+for (let i = 0; i < 42; i++) {
+  dustMotes.push({
+    x: rand(-1.55, 1.35), y: rand(0.35, 2.05), z: rand(-1.3, 1.35),
+    ph: rand(0, TAU), spd: rand(0.25, 0.75), sz: rand(0.012, 0.028)
+  });
+}
+
+// ============================================================================
+// 8. GAME WORLD & CHARACTER STATE
+// ============================================================================
+const BENCH_Y = 0.52;
+const PROP_HOME = {
+  pitcher: [-0.74, BENCH_Y, 0.94],
+  tin:     [-0.36, BENCH_Y, 1.00],
+  bottle:  [ 0.04, BENCH_Y, 0.98],
+  cap:     [ 0.25, BENCH_Y, 1.06],
+  towel:   [ 0.54, BENCH_Y, 1.00],
+  brush:   [ 0.80, BENCH_Y, 0.95],
+  crown:   [-0.95, 0.95, 0.54],
+  ribbon:  [ 0.96, 0.95, 0.54]
+};
+
+const state = {
+  time: 0,
+  roundsDone: 0,
+  celebrateTimer: 0,
+  autoResetTimer: 0,
+  nextBirdTime: 3.5,
+
+  // Milk preparation & feeding state (zero fail, any order works!)
+  powderScoops: 0,        // 0..2
+  waterAmount: 0,         // 0..1
+  capped: false,
+  mixProgress: 0,         // 0..1 (shaking mixes powder + water into rich creamy milk)
+  milkAmount: 0,          // 0..1 (available drinkable milk once mixed)
+  midPauseDone: false,
+  midPauseWait: 0,        // adorable mid-feed breath & tongue lick pause!
+  drinking: false,
+  drinkGulpPhase: 0,
+  autoFeedTimer: 0,       // allows effortless tap-to-feed in addition to drag-to-feed!
+  streamActive: 0,        // visual water pouring stream
+  streamFrom: [0, 0, 0],
+  streamTo: [0, 0, 0],
+
+  // Animated auto-actions when 5-year-old taps a prop instead of dragging
+  autoAction: null,       // { type, t, dur }
+
+  // Bottle transform & liquid slosh physics
+  bottle: {
+    pos: [...PROP_HOME.bottle],
+    rot: [0, 0, 0],
+    vel: [0, 0, 0],
+    sloshX: 0, sloshZ: 0, sloshVX: 0, sloshVZ: 0,
+    shakeEnergy: 0
+  },
+  pitcher: { pos: [...PROP_HOME.pitcher], rot: [0, 0.22, 0] },
+  scoop:   { pos: [PROP_HOME.tin[0] + 0.02, BENCH_Y + 0.15, PROP_HOME.tin[2]], rot: [0.25, 0.3, -0.45], hasPowder: false },
+  cap:     { pos: [...PROP_HOME.cap], rot: [0, 0, 0] },
+  towel:   { pos: [...PROP_HOME.towel], rot: [0, -0.18, 0] },
+  brush:   { pos: [...PROP_HOME.brush], rot: [0, -0.35, 0] },
+
+  // Unlockable morning gifts (grow across rounds so play never runs out!)
+  hasCrown: false,
+  crownOnCalf: false,
+  crown: { pos: [...PROP_HOME.crown], rot: [0.1, 0.2, 0] },
+
+  hasRibbon: false,
+  ribbonOnCalf: false,
+  ribbon: { pos: [...PROP_HOME.ribbon], rot: [0.1, -0.2, 0] },
+
+  // Barn interactive friends
+  bell: { angle: 0, vel: 0 },
+  butterfly: {
+    active: false,
+    pos: [-1.4, 1.75, -1.2],
+    target: [0, 1.15, 0.45],
+    mode: "fly", // 'fly', 'nose', 'orbit'
+    timer: 0,
+    wingPhase: 0
+  },
+  sparrow: {
+    pos: [-1.05, 1.58, -1.78],
+    home: [-1.05, 1.58, -1.78],
+    hopY: 0, hopVel: 0,
+    chirpTimer: 0,
+    onRail: false
+  },
+
+  // Jersey Calf live procedural animation state
+  calf: {
+    pos: [0.0, 0.0, -0.26],
+    yaw: 0.06,
+    leanZ: 0,         // leans affectionately toward wooden bench
+    hopY: 0,
+    hopPhase: 0,
+    pranceTimer: 0,   // joyful happy hop-prance!
+    headYaw: 0, headPitch: 0, headRoll: 0,
+    lookTarget: [0, 0.95, 1.2],
+    earL: 0, earR: 0, earFlickTimer: 2.0, earFlickSide: 0,
+    blink: 0, blinkTimer: 2.6,
+    bliss: 0,         // 0..1 happy half-closed eyes when petted/brushed/drinking
+    jawOpen: 0,
+    tongueOut: 0,     // 0..1 licks milky nose!
+    tongueTimer: 0,
+    tailAngle: 0, tailSpeed: 2.0,
+    milkMustache: 0,  // 0..1 creamy white milk foam on nose!
+    coatSheen: 0,     // 0..1 extra silky luster from brushing!
+    brushProgress: 0,
+    tummyFull: 0,     // 0..1 plump satisfied belly
+    buntPhase: 0,     // cute gentle nursing head nudge
+    mouthWorld: [0, 1.05, 0.35],
+    headWorld: [0, 1.18, 0.18],
+    noseWorld: [0, 1.08, 0.42]
+  },
+
+  // Pointer / Dragging state
+  pointer: {
+    down: false,
+    id: null,
+    x: 0, y: 0,
+    startX: 0, startY: 0,
+    prevX: 0, prevY: 0,
+    moved: 0,
+    grabbed: null, // 'pitcher','tin','bottle','cap','towel','brush','calf','crown','ribbon'
+    dragPlaneZ: 0.92,
+    worldPos: [0, 0.8, 0.9],
+    prevWorldPos: [0, 0.8, 0.9],
+    petSparkleCd: 0
+  }
+};
+
+// Camera & projection cache
+const cam = {
+  pos: [0.0, 1.32, 2.86],
+  target: [0.0, 0.86, 0.08],
+  fovY: 40 * PI / 180,
+  aspect: 1.6,
+  view: m4Identity(),
+  proj: m4Identity(),
+  vp: m4Identity(),
+  invVP: m4Identity(),
+  right: [1, 0, 0],
+  up: [0, 1, 0]
+};
+
+// Morning sun direction (upper-left slatted barn window!)
+const LIGHT_DIR = v3Norm([-0.64, 0.72, 0.28]);
+const LIGHT_COLOR = [2.65, 2.38, 1.92];
+const LIGHT_VIEW = m4LookAt(v3Scale(LIGHT_DIR, 5.2), [0, 0.65, 0.1], [0, 1, 0]);
+const LIGHT_PROJ = m4Ortho(-2.4, 2.4, -2.0, 2.3, 0.8, 11.5);
+const LIGHT_VP = m4Mul(LIGHT_PROJ, LIGHT_VIEW);
+
+// ============================================================================
+// 9. RAYCASTING & POINTER INTERACTION (Tap + Drag, Ultra-Forgiving for 5yo!)
+// ============================================================================
+function screenToRay(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = 1 - ((clientY - rect.top) / rect.height) * 2;
+  const near = m4TransformPoint(cam.invVP, [nx, ny, -1]);
+  const far = m4TransformPoint(cam.invVP, [nx, ny, 1]);
+  return { origin: near, dir: v3Norm(v3Sub(far, near)) };
+}
+
+function rayPointDist(ray, pt) {
+  const to = v3Sub(pt, ray.origin);
+  const t = Math.max(0, v3Dot(to, ray.dir));
+  const closest = v3Add(ray.origin, v3Scale(ray.dir, t));
+  return { dist: v3Dist(closest, pt), t };
+}
+
+function rayPlaneZ(ray, planeZ) {
+  const dz = ray.dir[2];
+  if (Math.abs(dz) < 1e-4) return [0, 0.8, planeZ];
+  const t = clamp((planeZ - ray.origin[2]) / dz, 0.3, 6.0);
+  return v3Add(ray.origin, v3Scale(ray.dir, t));
+}
+
+function hitTest(ray) {
+  const cands = [];
+  const add = (id, pt, rad, prio = 0) => {
+    const r = rayPointDist(ray, pt);
+    if (r.dist < rad) cands.push({ id, score: r.dist / rad - prio * 0.25, t: r.t });
+  };
+
+  // Bench props (generous radii for little fingers!)
+  add("bottle",  v3Add(state.bottle.pos, [0, 0.13, 0]), 0.17, 1.2);
+  if (!state.capped) add("cap", v3Add(state.cap.pos, [0, 0.04, 0]), 0.13, 1.4);
+  add("pitcher", v3Add(state.pitcher.pos, [0, 0.12, 0]), 0.18, 1.0);
+  add("tin",     v3Add(PROP_HOME.tin, [0, 0.10, 0]), 0.17, 1.0);
+  add("towel",   v3Add(state.towel.pos, [0, 0.04, 0]), 0.16, 1.0);
+  add("brush",   v3Add(state.brush.pos, [0, 0.04, 0]), 0.16, 1.0);
+
+  if (state.hasCrown && !state.crownOnCalf) add("crown", state.crown.pos, 0.16, 1.1);
+  if (state.hasRibbon && !state.ribbonOnCalf) add("ribbon", state.ribbon.pos, 0.16, 1.1);
+
+  // Barn interactive friends
+  add("bell", [-1.06, 1.38, 0.52], 0.17, 0.9);
+  add("sparrow", state.sparrow.pos, 0.16, 0.9);
+  if (state.butterfly.active) add("butterfly", state.butterfly.pos, 0.16, 1.1);
+
+  // Calf head, nose & body
+  add("calfNose", state.calf.noseWorld, 0.17, 0.7);
+  add("calf",     state.calf.headWorld, 0.28, 0.5);
+  add("calfBody", [state.calf.pos[0], 0.76, state.calf.pos[2] + 0.08], 0.34, 0.2);
+
+  if (!cands.length) return null;
+  cands.sort((a, b) => a.score - b.score);
+  return cands[0].id;
+}
+
+// Reset empty bottle cleanly so child can prepare another warm milk whenever desired!
+function resetBottleForNextRound() {
+  state.powderScoops = 0;
+  state.waterAmount = 0;
+  state.capped = false;
+  state.mixProgress = 0;
+  state.milkAmount = 0;
+  state.midPauseDone = false;
+  state.midPauseWait = 0;
+  state.drinking = false;
+  state.autoFeedTimer = 0;
+  state.autoResetTimer = 0;
+  state.cap.pos = [...PROP_HOME.cap];
+  state.cap.rot = [0, 0, 0];
+  SFX.capPop();
+  // Little sunlit dust puff at bottle
+  for (let i = 0; i < 8; i++) {
+    spawnParticle({
+      x: PROP_HOME.bottle[0] + rand(-0.06, 0.06),
+      y: BENCH_Y + 0.18 + rand(-0.04, 0.06),
+      z: PROP_HOME.bottle[2] + rand(-0.05, 0.05),
+      vx: rand(-0.18, 0.18), vy: rand(0.15, 0.38), vz: rand(-0.12, 0.12),
+      size: 0.04, maxLife: 0.7, r: 1, g: 0.95, b: 0.76, a: 0.7, additive: true
+    });
+  }
+}
+
+function isBottleEmptyAfterFeed() {
+  return state.capped && state.mixProgress >= 0.99 && state.milkAmount <= 0.01;
+}
+
+function startAutoAction(type, dur) {
+  state.autoAction = { type, t: 0, dur, didEffect: false };
+}
+
+function handleTap(hitId, ray) {
+  if (!hitId) {
+    // Tapping golden straw kicks up cheerful straw wisps!
+    const p = rayPlaneZ(ray, 0.1);
+    if (p[1] < 0.52) {
+      SFX.strawStep();
+      for (let i = 0; i < 8; i++) {
+        spawnParticle({
+          x: clamp(p[0], -1.2, 1.2) + rand(-0.1, 0.1), y: 0.12, z: rand(-0.4, 0.4),
+          vx: rand(-0.35, 0.35), vy: rand(0.35, 0.75), vz: rand(-0.2, 0.2),
+          size: 0.032, maxLife: 0.75, gravity: -1.4, r: 0.96, g: 0.80, b: 0.42, a: 0.85
+        });
+      }
+    }
+    return;
+  }
+
+  if (hitId === "bell") {
+    state.bell.vel = 6.5 * (Math.random() > 0.5 ? 1 : -1);
+    SFX.barnBell(false);
+    state.calf.lookTarget = [-1.06, 1.38, 0.52];
+    state.calf.earL = 0.45; state.calf.earR = 0.25;
+    return;
+  }
+  if (hitId === "sparrow") {
+    state.sparrow.hopVel = 1.6;
+    state.sparrow.chirpTimer = 0.6;
+    SFX.birdChirp(true);
+    state.calf.lookTarget = [...state.sparrow.pos];
+    return;
+  }
+  if (hitId === "butterfly") {
+    state.butterfly.mode = "orbit";
+    state.butterfly.timer = 4.2;
+    SFX.warmChime([880, 1174.66]);
+    return;
+  }
+  if (hitId === "crown" && state.hasCrown && !state.crownOnCalf) {
+    startAutoAction("wearCrown", 0.85);
+    return;
+  }
+  if (hitId === "ribbon" && state.hasRibbon && !state.ribbonOnCalf) {
+    startAutoAction("wearRibbon", 0.85);
+    return;
+  }
+
+  // Milk preparation & care auto-actions on simple tap (so 5yo never gets stuck!)
+  if (hitId === "tin") {
+    if (isBottleEmptyAfterFeed()) resetBottleForNextRound();
+    if (!state.capped && state.powderScoops < 2) {
+      startAutoAction("scoop", 0.95);
+    } else if (state.capped && state.mixProgress < 1) {
+      startAutoAction("shake", 0.65);
+    } else {
+      SFX.powderPour();
+    }
+    return;
+  }
+  if (hitId === "pitcher") {
+    if (isBottleEmptyAfterFeed()) resetBottleForNextRound();
+    if (!state.capped && state.waterAmount < 0.98) {
+      startAutoAction("pour", 1.25);
+    } else {
+      SFX.waterDrop(0.5);
+    }
+    return;
+  }
+  if (hitId === "cap" && !state.capped) {
+    if (state.powderScoops >= 1 || state.waterAmount >= 0.25) {
+      // Allow capping once something is inside; if both ready, snaps on!
+      if (state.powderScoops >= 1 && state.waterAmount >= 0.4) {
+        startAutoAction("cap", 0.55);
+      } else {
+        // Playful tiny bounce showing cap is excited
+        SFX.capPop();
+        state.cap.pos[1] += 0.06;
+      }
+    } else {
+      SFX.capPop();
+      state.cap.pos[1] += 0.05;
+    }
+    return;
+  }
+  if (hitId === "bottle") {
+    if (isBottleEmptyAfterFeed()) {
+      resetBottleForNextRound();
+      return;
+    }
+    if (!state.capped && state.powderScoops >= 1 && state.waterAmount >= 0.4) {
+      startAutoAction("cap", 0.55);
+    } else if (state.capped && state.mixProgress < 0.99) {
+      startAutoAction("shake", 0.65);
+    } else if (state.capped && state.mixProgress >= 0.99 && state.milkAmount > 0.01) {
+      // Effortless tap-to-offer feeding!
+      state.midPauseWait = 0;
+      state.autoFeedTimer = 3.2;
+      SFX.calfMoo("eager");
+    } else if (!state.capped && state.powderScoops < 1) {
+      // Gentle playful clink
+      SFX.capPop();
+    }
+    return;
+  }
+  if (hitId === "towel") {
+    startAutoAction("wipe", 1.05);
+    return;
+  }
+  if (hitId === "brush") {
+    startAutoAction("brush", 1.25);
+    return;
+  }
+  if (hitId === "calfNose" || hitId === "calf" || hitId === "calfBody") {
+    if (state.capped && state.mixProgress >= 0.99 && state.milkAmount > 0.01 && hitId === "calfNose") {
+      // Tapping calf's expectant nose when milk is ready lifts bottle to feed!
+      state.midPauseWait = 0;
+      state.autoFeedTimer = 3.2;
+      SFX.calfMoo("eager");
+    } else {
+      // Adorable nose boop / gentle pet reaction!
+      state.calf.bliss = Math.min(1, state.calf.bliss + 0.65);
+      state.calf.tongueTimer = 0.85;
+      state.calf.tailSpeed = 7.5;
+      SFX.calfMoo(state.milkAmount > 0.05 && state.mixProgress >= 0.99 ? "eager" : "happy");
+      if (state.ribbonOnCalf) SFX.barnBell(true);
+      spawnSparkles(state.calf.headWorld, 6);
+    }
+  }
+}
+
+function spawnSparkles(center, count = 5) {
+  for (let i = 0; i < count; i++) {
+    spawnParticle({
+      x: center[0] + rand(-0.18, 0.18),
+      y: center[1] + rand(-0.10, 0.18),
+      z: center[2] + rand(-0.10, 0.14),
+      vx: rand(-0.14, 0.14), vy: rand(0.16, 0.42), vz: rand(-0.10, 0.10),
+      size: rand(0.025, 0.048), maxLife: rand(0.65, 1.15),
+      r: 1.0, g: 0.94, b: 0.72, a: 0.85, additive: true
+    });
+  }
+}
+
+function spawnPowderPuff(pos, count = 14) {
+  for (let i = 0; i < count; i++) {
+    spawnParticle({
+      x: pos[0] + rand(-0.025, 0.025),
+      y: pos[1] + rand(-0.02, 0.02),
+      z: pos[2] + rand(-0.025, 0.025),
+      vx: rand(-0.08, 0.08), vy: rand(-0.35, -0.12), vz: rand(-0.08, 0.08),
+      size: rand(0.022, 0.044), grow: 0.025, maxLife: rand(0.45, 0.8),
+      r: 1.0, g: 0.97, b: 0.88, a: 0.72, gravity: -0.55
+    });
+  }
+}
+
+function onPointerDown(e) {
+  e.preventDefault();
+  SFX.init();
+  const pt = state.pointer;
+  if (pt.down) return;
+  pt.down = true;
+  pt.id = e.pointerId;
+  pt.x = pt.startX = pt.prevX = e.clientX;
+  pt.y = pt.startY = pt.prevY = e.clientY;
+  pt.moved = 0;
+  canvas.setPointerCapture?.(e.pointerId);
+
+  const ray = screenToRay(e.clientX, e.clientY);
+  const hit = hitTest(ray);
+  pt.grabbed = hit;
+
+  if (hit && hit !== "calf" && hit !== "calfNose" && hit !== "calfBody" && hit !== "bell" && hit !== "sparrow" && hit !== "butterfly") {
+    state.autoAction = null;
+    if (hit === "bottle") {
+      state.autoFeedTimer = 0;
+      if (isBottleEmptyAfterFeed()) resetBottleForNextRound();
+      pt.dragPlaneZ = 0.82;
+    } else if (hit === "towel" || hit === "brush" || hit === "crown" || hit === "ribbon") {
+      pt.dragPlaneZ = 0.56;
+    } else {
+      pt.dragPlaneZ = 0.94;
+    }
+    pt.worldPos = rayPlaneZ(ray, pt.dragPlaneZ);
+    pt.prevWorldPos = [...pt.worldPos];
+    canvas.classList.add("dragging");
+  }
+}
+
+function onPointerMove(e) {
+  const pt = state.pointer;
+  if (!pt.down || e.pointerId !== pt.id) return;
+  e.preventDefault();
+  pt.prevX = pt.x; pt.prevY = pt.y;
+  pt.x = e.clientX; pt.y = e.clientY;
+  const dx = pt.x - pt.prevX, dy = pt.y - pt.prevY;
+  pt.moved += Math.hypot(dx, dy);
+
+  const ray = screenToRay(e.clientX, e.clientY);
+  pt.prevWorldPos = [...pt.worldPos];
+  pt.worldPos = rayPlaneZ(ray, pt.dragPlaneZ);
+
+  // Direct petting when dragging on the calf!
+  if (pt.grabbed === "calf" || pt.grabbed === "calfNose" || pt.grabbed === "calfBody") {
+    const speed = Math.hypot(dx, dy);
+    if (speed > 2) {
+      state.calf.bliss = Math.min(1, state.calf.bliss + speed * 0.008);
+      state.calf.tailSpeed = 7.0;
+      const p3 = rayPlaneZ(ray, 0.35);
+      state.calf.lookTarget = [clamp(p3[0], -0.6, 0.6), clamp(p3[1], 0.8, 1.4), 0.75];
+      if (pt.petSparkleCd <= 0) {
+        pt.petSparkleCd = 0.14;
+        spawnSparkles([clamp(p3[0], -0.35, 0.35), clamp(p3[1], 0.95, 1.38), 0.38], 2);
+        SFX.petPurr();
+      }
+    }
+  }
+}
+
+function onPointerUp(e) {
+  const pt = state.pointer;
+  if (!pt.down || e.pointerId !== pt.id) return;
+  e.preventDefault();
+  canvas.classList.remove("dragging");
+  const wasTap = pt.moved < 14;
+  const hit = pt.grabbed;
+  const ray = screenToRay(e.clientX, e.clientY);
+
+  pt.down = false;
+  pt.id = null;
+  pt.grabbed = null;
+
+  if (wasTap) {
+    handleTap(hit, ray);
+  }
+}
+
+canvas.addEventListener("pointerdown", onPointerDown);
+canvas.addEventListener("pointermove", onPointerMove);
+canvas.addEventListener("pointerup", onPointerUp);
+canvas.addEventListener("pointercancel", onPointerUp);
+
+// ============================================================================
+// 10. SIMULATION UPDATE (Milk Physics, Nursing Loop, Calf Life, Barn Friends)
+// ============================================================================
+let waterSoundTimer = 0;
+
+function triggerFeedComplete() {
+  state.milkAmount = 0;
+  state.drinking = false;
+  state.autoFeedTimer = 0;
+  state.roundsDone++;
+  state.celebrateTimer = 4.2;
+  state.calf.pranceTimer = 2.6;
+  state.calf.tummyFull = 1.0;
+  state.calf.milkMustache = 1.0;
+  state.calf.tongueTimer = 1.8;
+  state.calf.bliss = 0.95;
+
+  SFX.calfMoo("happy");
+  setTimeout(() => SFX.warmChime([523.25, 659.25, 783.99, 1046.5, 1318.5]), 220);
+
+  // Unlock delightful morning discoveries progressively!
+  if (state.roundsDone >= 1 && !state.butterfly.active) {
+    state.butterfly.active = true;
+    state.butterfly.pos = [-1.45, 1.75, -1.2];
+    state.butterfly.mode = "nose";
+    state.butterfly.timer = 6.0;
+  }
+  if (state.roundsDone >= 2 && !state.hasCrown) {
+    state.hasCrown = true;
+    state.crown.pos = [...PROP_HOME.crown];
+  }
+  if (state.roundsDone >= 3 && !state.hasRibbon) {
+    state.hasRibbon = true;
+    state.ribbon.pos = [...PROP_HOME.ribbon];
+  }
+  if (state.roundsDone >= 2 && !state.sparrow.onRail) {
+    state.sparrow.onRail = true;
+    state.sparrow.home = [0.78, 0.98, 0.52];
+  }
+}
+
+function update(dt) {
+  dt = Math.min(dt, 0.05);
+  state.time += dt;
+  const t = state.time;
+  const pt = state.pointer;
+  if (pt.petSparkleCd > 0) pt.petSparkleCd -= dt;
+  if (waterSoundTimer > 0) waterSoundTimer -= dt;
+  state.streamActive = Math.max(0, state.streamActive - dt * 5);
+
+  // Occasional gentle distant morning birdsong
+  state.nextBirdTime -= dt;
+  if (state.nextBirdTime <= 0) {
+    state.nextBirdTime = rand(6.5, 13.5);
+    SFX.birdChirp(false);
+  }
+
+  // ---- Auto-action playback (when 5yo taps a prop instead of dragging) ----
+  let act = state.autoAction;
+  if (act) {
+    act.t += dt;
+    const p = clamp(act.t / act.dur, 0, 1);
+    const bp = state.bottle.pos;
+
+    if (act.type === "scoop") {
+      const arc = Math.sin(p * PI);
+      const start = [PROP_HOME.tin[0] + 0.02, BENCH_Y + 0.15, PROP_HOME.tin[2]];
+      const over = [bp[0] - 0.02, bp[1] + 0.34, bp[2]];
+      const k = p < 0.45 ? smoothstep(0, 0.45, p) : (p > 0.72 ? 1 - smoothstep(0.72, 1, p) : 1);
+      state.scoop.pos = v3Lerp(start, over, k);
+      state.scoop.pos[1] += arc * 0.08;
+      state.scoop.hasPowder = p > 0.12 && p < 0.56;
+      const tip = smoothstep(0.42, 0.60, p) * (1 - smoothstep(0.68, 0.85, p));
+      state.scoop.rot = [0.25, 0.3, -0.45 - tip * 1.65];
+      if (p > 0.50 && !act.didEffect) {
+        act.didEffect = true;
+        state.powderScoops = Math.min(2, state.powderScoops + 1);
+        SFX.powderPour();
+        spawnPowderPuff([bp[0], bp[1] + 0.25, bp[2]], 18);
+        state.calf.lookTarget = [bp[0], bp[1] + 0.2, bp[2]];
+        if (state.powderScoops === 2) SFX.warmChime([587.33, 783.99]);
+      }
+    } else if (act.type === "pour") {
+      const start = PROP_HOME.pitcher;
+      const over = [bp[0] - 0.23, bp[1] + 0.31, bp[2]];
+      const k = p < 0.28 ? smoothstep(0, 0.28, p) : (p > 0.78 ? 1 - smoothstep(0.78, 1, p) : 1);
+      state.pitcher.pos = v3Lerp(start, over, k);
+      const tilt = smoothstep(0.24, 0.38, p) * (1 - smoothstep(0.72, 0.86, p));
+      state.pitcher.rot = [0, 0.08, -tilt * 1.05];
+      if (tilt > 0.55 && state.waterAmount < 1) {
+        state.waterAmount = Math.min(1, state.waterAmount + dt * 1.35);
+        state.streamActive = 1;
+        const pMat = m4TRS(state.pitcher.pos, state.pitcher.rot, [1, 1, 1]);
+        state.streamFrom = m4TransformPoint(pMat, [0.10, 0.22, 0]);
+        state.streamTo = [bp[0], bp[1] + 0.03 + state.waterAmount * 0.16, bp[2]];
+        if (waterSoundTimer <= 0) { waterSoundTimer = 0.085; SFX.waterDrop(state.waterAmount); }
+        if (Math.random() < 0.4) {
+          spawnParticle({
+            x: bp[0] + rand(-0.02, 0.02), y: bp[1] + 0.24, z: bp[2] + rand(-0.02, 0.02),
+            vx: rand(-0.04, 0.04), vy: rand(0.18, 0.32), vz: rand(-0.04, 0.04),
+            size: 0.045, grow: 0.04, maxLife: 0.9, r: 1, g: 0.98, b: 0.95, a: 0.28
+          });
+        }
+        if (state.waterAmount >= 0.99 && !act.didEffect) {
+          act.didEffect = true;
+          SFX.warmChime([659.25, 880]);
+        }
+      }
+    } else if (act.type === "cap") {
+      const target = [bp[0], bp[1] + 0.235, bp[2]];
+      state.cap.pos = v3Lerp(PROP_HOME.cap, target, smoothstep(0, 1, p));
+      state.cap.pos[1] += Math.sin(p * PI) * 0.14;
+      if (p >= 0.95 && !act.didEffect) {
+        act.didEffect = true;
+        state.capped = true;
+        SFX.capPop();
+        spawnSparkles(target, 6);
+      }
+    } else if (act.type === "shake") {
+      const env = Math.sin(p * PI);
+      const osc = Math.sin(p * TAU * 3.5);
+      state.bottle.pos = [
+        PROP_HOME.bottle[0] + osc * 0.10 * env,
+        PROP_HOME.bottle[1] + 0.22 * env + Math.abs(osc) * 0.05 * env,
+        PROP_HOME.bottle[2]
+      ];
+      state.bottle.rot = [0.08 * env, 0, osc * 0.48 * env];
+      state.bottle.sloshVX += osc * 16 * dt;
+      state.mixProgress = Math.min(1, state.mixProgress + dt * 0.65);
+      SFX.shakeSlosh(0.95);
+      if (state.mixProgress >= 0.99 && state.milkAmount <= 0 && !act.didEffect) {
+        act.didEffect = true;
+        state.milkAmount = 1.0;
+        SFX.warmChime([523.25, 659.25, 783.99]);
+        SFX.calfMoo("eager");
+        spawnSparkles(v3Add(state.bottle.pos, [0, 0.16, 0]), 10);
+      }
+    } else if (act.type === "wipe") {
+      const nose = state.calf.noseWorld;
+      const k = p < 0.25 ? smoothstep(0, 0.25, p) : (p > 0.8 ? 1 - smoothstep(0.8, 1, p) : 1);
+      const rub = Math.sin(p * TAU * 3.5) * 0.065 * k;
+      state.towel.pos = v3Lerp(PROP_HOME.towel, [nose[0] + rub, nose[1] - 0.01, nose[2] + 0.09], k);
+      state.towel.rot = [0.65 * k, 0, rub * 2.4];
+      if (k > 0.7) {
+        state.calf.milkMustache = Math.max(0, state.calf.milkMustache - dt * 1.9);
+        state.calf.bliss = Math.min(1, state.calf.bliss + dt * 0.8);
+        SFX.softStroke(true);
+        if (state.calf.milkMustache <= 0.02 && !act.didEffect) {
+          act.didEffect = true;
+          SFX.calfMoo("happy");
+          SFX.warmChime([659.25, 783.99, 1046.5]);
+          spawnSparkles(nose, 8);
+        }
+      }
+    } else if (act.type === "brush") {
+      const head = state.calf.headWorld;
+      const k = p < 0.22 ? smoothstep(0, 0.22, p) : (p > 0.82 ? 1 - smoothstep(0.82, 1, p) : 1);
+      const stroke = Math.sin(p * TAU * 3.0) * 0.13 * k;
+      state.brush.pos = v3Lerp(PROP_HOME.brush, [head[0] + stroke, head[1] + 0.09, head[2] + 0.12], k);
+      state.brush.rot = [0.45 * k, -0.35, stroke * 1.4];
+      if (k > 0.7) {
+        state.calf.coatSheen = Math.min(1, state.calf.coatSheen + dt * 0.65);
+        state.calf.bliss = Math.min(1, state.calf.bliss + dt * 1.1);
+        state.calf.tailSpeed = 7.5;
+        SFX.softStroke(false);
+        if (Math.random() < 0.35) spawnSparkles([head[0] + stroke, head[1] + 0.08, head[2] + 0.1], 1);
+        if (p > 0.75 && !act.didEffect) {
+          act.didEffect = true;
+          SFX.calfMoo("happy");
+          if (state.ribbonOnCalf) SFX.barnBell(true);
+        }
+      }
+    } else if (act.type === "wearCrown") {
+      const target = [state.calf.headWorld[0], state.calf.headWorld[1] + 0.14, state.calf.headWorld[2]];
+      state.crown.pos = v3Lerp(PROP_HOME.crown, target, smoothstep(0, 1, p));
+      state.crown.pos[1] += Math.sin(p * PI) * 0.18;
+      if (p >= 0.95 && !act.didEffect) {
+        act.didEffect = true;
+        state.crownOnCalf = true;
+        SFX.warmChime([523.25, 659.25, 783.99, 1046.5]);
+        SFX.calfMoo("happy");
+        spawnSparkles(target, 12);
+      }
+    } else if (act.type === "wearRibbon") {
+      const target = [state.calf.pos[0], 0.92, state.calf.pos[2] + 0.34];
+      state.ribbon.pos = v3Lerp(PROP_HOME.ribbon, target, smoothstep(0, 1, p));
+      state.ribbon.pos[1] += Math.sin(p * PI) * 0.16;
+      if (p >= 0.95 && !act.didEffect) {
+        act.didEffect = true;
+        state.ribbonOnCalf = true;
+        SFX.barnBell(true);
+        SFX.warmChime([587.33, 739.99, 880, 1174.66]);
+        SFX.calfMoo("happy");
+        spawnSparkles(target, 12);
+      }
+    }
+
+    if (p >= 1) state.autoAction = null;
+  }
+
+  // ---- Direct Dragging Interactions ----
+  const grab = pt.down ? pt.grabbed : null;
+  const bottleMouth = [state.bottle.pos[0], state.bottle.pos[1] + 0.24, state.bottle.pos[2]];
+
+  // 1) Dragging Scoop from Milk Powder Tin
+  if (grab === "tin") {
+    if (isBottleEmptyAfterFeed()) resetBottleForNextRound();
+    const target = [clamp(pt.worldPos[0], -1.0, 1.0), clamp(pt.worldPos[1], BENCH_Y + 0.12, 1.45), PROP_HOME.bottle[2]];
+    state.scoop.pos = v3Lerp(state.scoop.pos, target, 1 - Math.exp(-18 * dt));
+    if (v3Dist(state.scoop.pos, [PROP_HOME.tin[0], BENCH_Y + 0.14, PROP_HOME.tin[2]]) < 0.22) {
+      state.scoop.hasPowder = true;
+    }
+    const overBottle = !state.capped && v3Dist(state.scoop.pos, [bottleMouth[0], bottleMouth[1] + 0.10, bottleMouth[2]]) < 0.24;
+    state.scoop.rot[2] = damp(state.scoop.rot[2], overBottle ? -2.0 : -0.35, 14, dt);
+    if (overBottle && state.scoop.hasPowder && state.powderScoops < 2) {
+      state.scoop.hasPowder = false;
+      state.powderScoops++;
+      SFX.powderPour();
+      spawnPowderPuff(bottleMouth, 18);
+      if (state.powderScoops === 2) SFX.warmChime([587.33, 783.99]);
+    }
+  } else if (!act || act.type !== "scoop") {
+    state.scoop.pos = v3Lerp(state.scoop.pos, [PROP_HOME.tin[0] + 0.02, BENCH_Y + 0.15, PROP_HOME.tin[2]], 1 - Math.exp(-10 * dt));
+    state.scoop.rot = [damp(state.scoop.rot[0], 0.25, 10, dt), damp(state.scoop.rot[1], 0.3, 10, dt), damp(state.scoop.rot[2], -0.45, 10, dt)];
+    state.scoop.hasPowder = false;
+  }
+
+  // 2) Dragging Warm Water Pitcher
+  if (grab === "pitcher") {
+    if (isBottleEmptyAfterFeed()) resetBottleForNextRound();
+    const target = [clamp(pt.worldPos[0], -1.1, 0.9), clamp(pt.worldPos[1], BENCH_Y + 0.04, 1.45), PROP_HOME.bottle[2]];
+    state.pitcher.pos = v3Lerp(state.pitcher.pos, target, 1 - Math.exp(-16 * dt));
+    const nearBottle = !state.capped && Math.hypot(state.pitcher.pos[0] - (state.bottle.pos[0] - 0.20), state.pitcher.pos[1] - (state.bottle.pos[1] + 0.28)) < 0.38;
+    state.pitcher.rot[2] = damp(state.pitcher.rot[2], nearBottle ? -1.04 : -0.1, 12, dt);
+    if (nearBottle && state.waterAmount < 1) {
+      state.waterAmount = Math.min(1, state.waterAmount + dt * 0.92);
+      state.streamActive = 1;
+      const pMat = m4TRS(state.pitcher.pos, state.pitcher.rot, [1, 1, 1]);
+      state.streamFrom = m4TransformPoint(pMat, [0.10, 0.22, 0]);
+      state.streamTo = [state.bottle.pos[0], state.bottle.pos[1] + 0.03 + state.waterAmount * 0.16, state.bottle.pos[2]];
+      if (waterSoundTimer <= 0) { waterSoundTimer = 0.09; SFX.waterDrop(state.waterAmount); }
+      if (state.waterAmount >= 0.99) SFX.warmChime([659.25, 880]);
+    }
+  } else if (!act || act.type !== "pour") {
+    state.pitcher.pos = v3Lerp(state.pitcher.pos, PROP_HOME.pitcher, 1 - Math.exp(-9 * dt));
+    state.pitcher.rot = [0, damp(state.pitcher.rot[1], 0.22, 9, dt), damp(state.pitcher.rot[2], 0, 9, dt)];
+  }
+
+  // 3) Dragging Rubber Nipple Cap
+  if (grab === "cap" && !state.capped) {
+    const target = [clamp(pt.worldPos[0], -0.9, 0.9), clamp(pt.worldPos[1], BENCH_Y + 0.02, 1.45), PROP_HOME.bottle[2]];
+    state.cap.pos = v3Lerp(state.cap.pos, target, 1 - Math.exp(-18 * dt));
+    if (v3Dist(state.cap.pos, bottleMouth) < 0.22 && state.powderScoops >= 1 && state.waterAmount >= 0.4) {
+      state.capped = true;
+      pt.grabbed = null;
+      SFX.capPop();
+      spawnSparkles(bottleMouth, 7);
+    }
+  } else if (!state.capped && (!act || act.type !== "cap")) {
+    state.cap.pos = v3Lerp(state.cap.pos, PROP_HOME.cap, 1 - Math.exp(-10 * dt));
+  }
+
+  // 4) Dragging / Shaking / Feeding with the Nursing Bottle
+  let wantDrink = false;
+  const milkReady = state.capped && state.mixProgress >= 0.99 && state.milkAmount > 0.01;
+
+  if (grab === "bottle") {
+    const prev = [...state.bottle.pos];
+    let tx = clamp(pt.worldPos[0], -0.95, 0.95);
+    let ty = clamp(pt.worldPos[1] - 0.10, BENCH_Y, 1.48);
+    let tz = 0.84;
+
+    // If milk is ready and child drags near calf's mouth, magnetize smoothly into cozy nursing pose!
+    const distToMouth = Math.hypot(tx - state.calf.mouthWorld[0], (ty + 0.14) - state.calf.mouthWorld[1]);
+    if (milkReady && distToMouth < 0.44 && state.midPauseWait <= 0) {
+      tx = lerp(tx, state.calf.mouthWorld[0] + 0.01, 0.78);
+      ty = lerp(ty, state.calf.mouthWorld[1] + 0.10, 0.78);
+      tz = state.calf.mouthWorld[2] + 0.33;
+      wantDrink = true;
+    }
+
+    state.bottle.pos = v3Lerp(state.bottle.pos, [tx, ty, tz], 1 - Math.exp(-18 * dt));
+    const vx = (state.bottle.pos[0] - prev[0]) / dt;
+    const vy = (state.bottle.pos[1] - prev[1]) / dt;
+    const spd = Math.hypot(vx, vy);
+
+    // Shaking to mix powder + warm water into creamy milk!
+    if (state.capped && state.mixProgress < 1 && spd > 0.45) {
+      state.mixProgress = Math.min(1, state.mixProgress + spd * dt * 0.24);
+      state.bottle.sloshVX += clamp(vx * 2.5, -14, 14) * dt;
+      state.bottle.rot[2] = damp(state.bottle.rot[2], clamp(-vx * 0.24, -0.58, 0.58), 14, dt);
+      SFX.shakeSlosh(spd * 0.45);
+      if (state.mixProgress >= 0.99 && state.milkAmount <= 0) {
+        state.milkAmount = 1.0;
+        SFX.warmChime([523.25, 659.25, 783.99]);
+        SFX.calfMoo("eager");
+        spawnSparkles(v3Add(state.bottle.pos, [0, 0.15, 0]), 10);
+      }
+    } else if (wantDrink) {
+      // Natural nursing angle: nipple angled gently toward calf's mouth!
+      state.bottle.rot[0] = damp(state.bottle.rot[0], -1.85, 11, dt);
+      state.bottle.rot[2] = damp(state.bottle.rot[2], 0.10, 11, dt);
+    } else {
+      state.bottle.rot[0] = damp(state.bottle.rot[0], 0.05, 10, dt);
+      state.bottle.rot[2] = damp(state.bottle.rot[2], clamp(-vx * 0.14, -0.35, 0.35), 10, dt);
+    }
+  } else if (state.autoFeedTimer > 0 && milkReady) {
+    state.autoFeedTimer -= dt;
+    if (state.midPauseWait <= 0) {
+      const m = state.calf.mouthWorld;
+      const targetPos = [m[0] + 0.01, m[1] + 0.10, m[2] + 0.33];
+      state.bottle.pos = v3Lerp(state.bottle.pos, targetPos, 1 - Math.exp(-10 * dt));
+      state.bottle.rot[0] = damp(state.bottle.rot[0], -1.85, 10, dt);
+      state.bottle.rot[2] = damp(state.bottle.rot[2], 0.08, 10, dt);
+      if (v3Dist(state.bottle.pos, targetPos) < 0.20) {
+        wantDrink = true;
+      }
+    } else {
+      // Gentle pullback during cute mid-feed breath pause
+      state.bottle.pos = v3Lerp(state.bottle.pos, [0.16, 0.92, 0.88], 1 - Math.exp(-7 * dt));
+      state.bottle.rot[0] = damp(state.bottle.rot[0], -0.45, 7, dt);
+    }
+  } else if (!act || act.type !== "shake") {
+    state.bottle.pos = v3Lerp(state.bottle.pos, PROP_HOME.bottle, 1 - Math.exp(-9 * dt));
+    state.bottle.rot[0] = damp(state.bottle.rot[0], 0, 9, dt);
+    state.bottle.rot[1] = damp(state.bottle.rot[1], 0, 9, dt);
+    state.bottle.rot[2] = damp(state.bottle.rot[2], 0, 9, dt);
+  }
+
+  // Spring physics for bottle liquid sloshing
+  state.bottle.sloshVX += (-state.bottle.sloshX * 36 - state.bottle.sloshVX * 4.5) * dt;
+  state.bottle.sloshX = clamp(state.bottle.sloshX + state.bottle.sloshVX * dt, -0.45, 0.45);
+
+  // ---- Nursing "Goku-Goku" Logic ----
+  if (state.midPauseWait > 0) state.midPauseWait -= dt;
+  state.drinking = wantDrink && milkReady && state.midPauseWait <= 0;
+
+  if (state.drinking) {
+    const prevPhase = state.drinkGulpPhase;
+    state.drinkGulpPhase += dt * 2.15; // Cozy rhythmic ~2.15 gulps per second!
+    state.milkAmount = Math.max(0, state.milkAmount - dt * 0.135);
+    state.calf.tummyFull = Math.max(state.calf.tummyFull, 1.0 - state.milkAmount);
+    state.calf.bliss = damp(state.calf.bliss, 0.85, 4, dt);
+    state.calf.tailSpeed = 9.5;
+    state.calf.milkMustache = Math.min(1, state.calf.milkMustache + dt * 0.16);
+
+    // Every full gulp cycle triggers audible "goku!", throat swallow, and rising bubbles inside bottle!
+    if (Math.floor(state.drinkGulpPhase) > Math.floor(prevPhase)) {
+      SFX.gulp(1.0 - state.milkAmount);
+      state.calf.buntPhase = 1.0;
+      if (state.ribbonOnCalf && Math.random() < 0.35) SFX.barnBell(true);
+      // Rising air bubbles inside the clear glass bottle!
+      for (let i = 0; i < 3; i++) {
+        spawnParticle({
+          x: state.bottle.pos[0] + rand(-0.025, 0.025),
+          y: state.bottle.pos[1] + rand(-0.02, 0.05),
+          z: state.bottle.pos[2] + rand(-0.02, 0.02),
+          vx: rand(-0.03, 0.03), vy: rand(0.14, 0.24), vz: rand(0.05, 0.12),
+          size: rand(0.016, 0.028), maxLife: 0.55,
+          r: 1.0, g: 0.99, b: 0.96, a: 0.75
+        });
+      }
+    }
+
+    // Adorable mid-feed happy breath break & milk-mustache lick at ~48%
+    if (!state.midPauseDone && state.milkAmount < 0.50) {
+      state.midPauseDone = true;
+      state.midPauseWait = 1.45;
+      state.calf.tongueTimer = 1.15;
+      SFX.calfMoo("sigh");
+      spawnSparkles(state.calf.noseWorld, 5);
+    }
+
+    // Finished last drop!
+    if (state.milkAmount <= 0.005) {
+      triggerFeedComplete();
+    }
+  } else {
+    state.calf.buntPhase = Math.max(0, state.calf.buntPhase - dt * 3.5);
+  }
+
+  // 5) Dragging Soft White Cotton Towel (wipes adorable milk mustache!)
+  if (grab === "towel") {
+    const target = [clamp(pt.worldPos[0], -1.0, 1.0), clamp(pt.worldPos[1], BENCH_Y + 0.02, 1.5), 0.58];
+    state.towel.pos = v3Lerp(state.towel.pos, target, 1 - Math.exp(-18 * dt));
+    state.towel.rot = [0.65, 0, clamp((pt.worldPos[0] - pt.prevWorldPos[0]) * 6, -0.5, 0.5)];
+    if (v3Dist(state.towel.pos, state.calf.noseWorld) < 0.34) {
+      const move = v3Dist(pt.worldPos, pt.prevWorldPos);
+      if (move > 0.003) {
+        const hadMilk = state.calf.milkMustache > 0.08;
+        state.calf.milkMustache = Math.max(0, state.calf.milkMustache - move * 2.4);
+        state.calf.bliss = Math.min(1, state.calf.bliss + move * 1.4);
+        SFX.softStroke(true);
+        if (Math.random() < 0.35) spawnSparkles(state.calf.noseWorld, 1);
+        if (hadMilk && state.calf.milkMustache <= 0.08) {
+          SFX.calfMoo("happy");
+          SFX.warmChime([659.25, 783.99, 1046.5]);
+          spawnSparkles(state.calf.noseWorld, 9);
+        }
+      }
+    }
+  } else if (!act || act.type !== "wipe") {
+    state.towel.pos = v3Lerp(state.towel.pos, PROP_HOME.towel, 1 - Math.exp(-9 * dt));
+    state.towel.rot = [damp(state.towel.rot[0], 0, 9, dt), damp(state.towel.rot[1], -0.18, 9, dt), damp(state.towel.rot[2], 0, 9, dt)];
+  }
+
+  // 6) Dragging Soft Wooden Grooming Brush (polishes calf coat to silky sheen!)
+  if (grab === "brush") {
+    const target = [clamp(pt.worldPos[0], -1.0, 1.0), clamp(pt.worldPos[1], BENCH_Y + 0.02, 1.55), 0.52];
+    state.brush.pos = v3Lerp(state.brush.pos, target, 1 - Math.exp(-18 * dt));
+    state.brush.rot = [0.48, -0.25, clamp((pt.worldPos[0] - pt.prevWorldPos[0]) * 5, -0.5, 0.5)];
+    if (v3Dist(state.brush.pos, state.calf.headWorld) < 0.46 || v3Dist(state.brush.pos, [state.calf.pos[0], 0.85, 0.1]) < 0.48) {
+      const move = v3Dist(pt.worldPos, pt.prevWorldPos);
+      if (move > 0.003) {
+        const prevProg = state.calf.brushProgress;
+        state.calf.brushProgress = Math.min(1, state.calf.brushProgress + move * 0.9);
+        state.calf.coatSheen = Math.min(1, state.calf.coatSheen + move * 0.85);
+        state.calf.bliss = Math.min(1, state.calf.bliss + move * 1.6);
+        state.calf.tailSpeed = 8.0;
+        SFX.softStroke(false);
+        if (Math.random() < 0.45) spawnSparkles(state.brush.pos, 1);
+        if (prevProg < 0.95 && state.calf.brushProgress >= 0.95) {
+          SFX.calfMoo("happy");
+          SFX.warmChime([523.25, 659.25, 783.99, 1046.5]);
+          spawnSparkles(state.calf.headWorld, 12);
+          state.calf.pranceTimer = 1.6;
+        }
+      }
+    }
+  } else if (!act || act.type !== "brush") {
+    state.brush.pos = v3Lerp(state.brush.pos, PROP_HOME.brush, 1 - Math.exp(-9 * dt));
+    state.brush.rot = [damp(state.brush.rot[0], 0, 9, dt), damp(state.brush.rot[1], -0.35, 9, dt), damp(state.brush.rot[2], 0, 9, dt)];
+  }
+
+  // 7) Dragging Unlockable Flower Crown & Ribbon
+  if (grab === "crown" && state.hasCrown && !state.crownOnCalf) {
+    state.crown.pos = v3Lerp(state.crown.pos, [clamp(pt.worldPos[0], -1.1, 1.1), clamp(pt.worldPos[1], 0.6, 1.6), 0.35], 1 - Math.exp(-16 * dt));
+    if (v3Dist(state.crown.pos, state.calf.headWorld) < 0.36) {
+      state.crownOnCalf = true; pt.grabbed = null;
+      SFX.warmChime([523.25, 659.25, 783.99, 1046.5]);
+      SFX.calfMoo("happy");
+      spawnSparkles(state.calf.headWorld, 12);
+    }
+  } else if (state.hasCrown && !state.crownOnCalf && (!act || act.type !== "wearCrown")) {
+    state.crown.pos = v3Lerp(state.crown.pos, PROP_HOME.crown, 1 - Math.exp(-8 * dt));
+  }
+
+  if (grab === "ribbon" && state.hasRibbon && !state.ribbonOnCalf) {
+    state.ribbon.pos = v3Lerp(state.ribbon.pos, [clamp(pt.worldPos[0], -1.1, 1.1), clamp(pt.worldPos[1], 0.6, 1.6), 0.35], 1 - Math.exp(-16 * dt));
+    if (v3Dist(state.ribbon.pos, [state.calf.pos[0], 0.94, 0.25]) < 0.38) {
+      state.ribbonOnCalf = true; pt.grabbed = null;
+      SFX.barnBell(true);
+      SFX.warmChime([587.33, 739.99, 880, 1174.66]);
+      SFX.calfMoo("happy");
+      spawnSparkles([state.calf.pos[0], 0.94, 0.25], 12);
+    }
+  } else if (state.hasRibbon && !state.ribbonOnCalf && (!act || act.type !== "wearRibbon")) {
+    state.ribbon.pos = v3Lerp(state.ribbon.pos, PROP_HOME.ribbon, 1 - Math.exp(-8 * dt));
+  }
+
+  // Gentle auto-refresh of empty bottle after happy care period so loop flows effortlessly
+  if (isBottleEmptyAfterFeed() && state.celebrateTimer <= 0 && state.calf.milkMustache < 0.15 && !pt.down && !act) {
+    state.autoResetTimer += dt;
+    if (state.autoResetTimer > 6.5) {
+      resetBottleForNextRound();
+    }
+  } else {
+    state.autoResetTimer = 0;
+  }
+  if (state.celebrateTimer > 0) state.celebrateTimer -= dt;
+
+  // ---- Warm Rising Steam Wisps from Pitcher & Mixed Warm Milk Bottle ----
+  if (Math.random() < dt * 4.5) {
+    spawnParticle({
+      x: state.pitcher.pos[0] + rand(-0.025, 0.025),
+      y: state.pitcher.pos[1] + 0.23,
+      z: state.pitcher.pos[2] + rand(-0.025, 0.025),
+      vx: rand(-0.03, 0.03), vy: rand(0.12, 0.22), vz: rand(-0.02, 0.02),
+      size: 0.034, grow: 0.048, maxLife: rand(1.1, 1.7),
+      r: 1.0, g: 0.98, b: 0.94, a: 0.20
+    });
+  }
+  if ((state.waterAmount > 0.25 && !state.capped) || (milkReady && !state.drinking)) {
+    if (Math.random() < dt * 3.8) {
+      spawnParticle({
+        x: state.bottle.pos[0] + rand(-0.02, 0.02),
+        y: state.bottle.pos[1] + (state.capped ? 0.34 : 0.25),
+        z: state.bottle.pos[2] + rand(-0.02, 0.02),
+        vx: rand(-0.025, 0.025), vy: rand(0.11, 0.20), vz: rand(-0.02, 0.02),
+        size: 0.028, grow: 0.042, maxLife: rand(0.95, 1.45),
+        r: 1.0, g: 0.98, b: 0.92, a: 0.22
+      });
+    }
+  }
+
+  // ---- Brass Bell Pendulum ----
+  state.bell.vel += (-Math.sin(state.bell.angle) * 28 - state.bell.vel * 1.9) * dt;
+  state.bell.angle += state.bell.vel * dt;
+
+  // ---- Morning Sparrow ----
+  const sp = state.sparrow;
+  sp.pos = v3Lerp(sp.pos, sp.home, 1 - Math.exp(-3.5 * dt));
+  if (sp.hopY > 0 || sp.hopVel > 0) {
+    sp.hopVel -= 9.5 * dt;
+    sp.hopY = Math.max(0, sp.hopY + sp.hopVel * dt);
+    if (sp.hopY <= 0) sp.hopVel = 0;
+  }
+  if (sp.chirpTimer > 0) sp.chirpTimer -= dt;
+
+  // ---- Golden-White Morning Butterfly ----
+  const bf = state.butterfly;
+  if (bf.active) {
+    bf.wingPhase += dt * (bf.mode === "nose" && v3Dist(bf.pos, bf.target) < 0.08 ? 4.5 : 19.0);
+    bf.timer -= dt;
+    if (bf.mode === "nose") {
+      bf.target = [state.calf.noseWorld[0], state.calf.noseWorld[1] + 0.055, state.calf.noseWorld[2] + 0.03];
+      if (bf.timer <= 0) { bf.mode = "orbit"; bf.timer = rand(5, 8); }
+    } else {
+      const ang = t * 0.9;
+      bf.target = [Math.sin(ang) * 0.65, 1.38 + Math.sin(t * 2.1) * 0.20, 0.15 + Math.cos(ang * 0.7) * 0.45];
+      if (bf.timer <= 0 && !state.drinking) { bf.mode = "nose"; bf.timer = rand(4.5, 7); }
+    }
+    bf.pos = v3Lerp(bf.pos, bf.target, 1 - Math.exp(-2.8 * dt));
+  }
+
+  // ---- Jersey Calf Procedural Life & Adorable Behavior ----
+  const cf = state.calf;
+  cf.bliss = Math.max(0, cf.bliss - dt * (state.drinking ? 0.05 : 0.22));
+  cf.tailSpeed = damp(cf.tailSpeed, milkReady ? 6.2 : 2.1, 2.5, dt);
+  cf.tailAngle += dt * cf.tailSpeed;
+
+  // Joyful post-meal hop-prance ("zoomies" in golden straw!)
+  if (cf.pranceTimer > 0) {
+    cf.pranceTimer -= dt;
+    cf.hopPhase += dt * 7.8;
+    const h = Math.max(0, Math.sin(cf.hopPhase));
+    cf.hopY = h * 0.12;
+    if (Math.sin(cf.hopPhase) > 0.92 && Math.random() < 0.45) {
+      SFX.strawStep();
+      if (state.ribbonOnCalf) SFX.barnBell(true);
+      for (let i = 0; i < 3; i++) {
+        spawnParticle({
+          x: cf.pos[0] + rand(-0.28, 0.28), y: 0.08, z: cf.pos[2] + rand(-0.2, 0.2),
+          vx: rand(-0.45, 0.45), vy: rand(0.35, 0.8), vz: rand(-0.25, 0.35),
+          size: 0.034, maxLife: 0.8, gravity: -1.6, r: 0.96, g: 0.80, b: 0.44, a: 0.85
+        });
+      }
+    }
+  } else {
+    cf.hopY = damp(cf.hopY, 0, 10, dt);
+  }
+
+  // Natural blinking
+  cf.blinkTimer -= dt;
+  if (cf.blinkTimer <= 0) {
+    cf.blinkTimer = rand(2.4, 5.2);
+    cf.blink = 1.0;
+  }
+  cf.blink = Math.max(0, cf.blink - dt * 6.5);
+
+  // Cute tongue licking milky nose
+  if (cf.tongueTimer > 0) {
+    cf.tongueTimer -= dt;
+    cf.tongueOut = damp(cf.tongueOut, Math.sin(t * 9.5) * 0.5 + 0.5, 14, dt);
+  } else if (cf.milkMustache > 0.35 && !state.drinking && Math.sin(t * 0.7) > 0.86) {
+    cf.tongueOut = damp(cf.tongueOut, 0.75, 10, dt);
+  } else {
+    cf.tongueOut = damp(cf.tongueOut, 0, 10, dt);
+  }
+
+  // Where is the calf looking? (Follows active prop, bottle, butterfly, or child's touch!)
+  if (state.drinking) {
+    cf.lookTarget = [state.bottle.pos[0], state.bottle.pos[1] - 0.06, state.bottle.pos[2]];
+  } else if (grab === "bottle" || (milkReady && !pt.down)) {
+    cf.lookTarget = [state.bottle.pos[0], state.bottle.pos[1] + 0.16, state.bottle.pos[2]];
+  } else if (grab === "pitcher") {
+    cf.lookTarget = state.pitcher.pos;
+  } else if (grab === "tin") {
+    cf.lookTarget = state.scoop.pos;
+  } else if (grab === "towel") {
+    cf.lookTarget = state.towel.pos;
+  } else if (grab === "brush") {
+    cf.lookTarget = state.brush.pos;
+  } else if (bf.active && bf.mode === "nose") {
+    cf.lookTarget = bf.pos;
+  } else if (Math.abs(state.bell.vel) > 0.8) {
+    cf.lookTarget = [-1.06, 1.38, 0.52];
+  } else {
+    // Gentle curious gaze toward bench props & child
+    cf.lookTarget = [Math.sin(t * 0.45) * 0.32, 0.92 + Math.sin(t * 0.7) * 0.08, 1.15];
+  }
+
+  // Lean lovingly over the pen rail when milk is ready, drinking, or being cared for
+  const eagerLean = state.drinking ? 0.24 : (milkReady ? 0.19 : (grab === "towel" || grab === "brush" || grab === "calf" ? 0.14 : 0.04));
+  cf.leanZ = damp(cf.leanZ, eagerLean, 4.5, dt);
+
+  const toLook = v3Sub(cf.lookTarget, [cf.pos[0], 1.15, cf.pos[2] + 0.35 + cf.leanZ]);
+  const targetYaw = clamp(Math.atan2(toLook[0], Math.max(0.35, toLook[2])) * 0.72, -0.52, 0.52);
+  const targetPitch = clamp(-Math.atan2(toLook[1], Math.hypot(toLook[0], toLook[2])) * 0.65, -0.35, 0.38);
+  const buntPitch = Math.sin(cf.buntPhase * PI) * -0.09;
+  const pranceRoll = cf.pranceTimer > 0 ? Math.sin(cf.hopPhase * 1.0) * 0.14 : 0;
+
+  cf.headYaw = damp(cf.headYaw, targetYaw, 6.5, dt);
+  cf.headPitch = damp(cf.headPitch, targetPitch + buntPitch + (state.drinking ? -0.14 : 0), 7.5, dt);
+  cf.headRoll = damp(cf.headRoll, -targetYaw * 0.24 + pranceRoll + (cf.bliss * 0.08 * Math.sin(t * 2.2)), 6.0, dt);
+
+  // Expressive independent Jersey ears!
+  cf.earFlickTimer -= dt;
+  if (cf.earFlickTimer <= 0) {
+    cf.earFlickTimer = rand(2.5, 6.2);
+    cf.earFlickSide = Math.random() > 0.5 ? 1 : -1;
+  }
+  const gulpEarBounce = state.drinking ? Math.sin(state.drinkGulpPhase * TAU) * 0.16 : 0;
+  const eagerEar = milkReady ? 0.26 : 0;
+  const blissDroop = cf.bliss * -0.22;
+  const flick = cf.earFlickTimer > 2.2 ? Math.sin(cf.earFlickTimer * 26) * 0.22 : 0;
+  cf.earL = damp(cf.earL, eagerEar + blissDroop + gulpEarBounce + (cf.earFlickSide < 0 ? flick : 0), 10, dt);
+  cf.earR = damp(cf.earR, eagerEar + blissDroop + gulpEarBounce + (cf.earFlickSide > 0 ? flick : 0), 10, dt);
+
+  // Jaw suckling rhythm
+  const targetJaw = state.drinking
+    ? 0.24 + (Math.sin(state.drinkGulpPhase * TAU) * 0.5 + 0.5) * 0.18
+    : (milkReady && grab === "bottle" && v3Dist(state.bottle.pos, cf.mouthWorld) < 0.65 ? 0.18 : 0.02 + cf.tongueOut * 0.14);
+  cf.jawOpen = damp(cf.jawOpen, targetJaw, 18, dt);
+
+  // ---- Update Particles ----
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life += dt;
+    if (p.life >= p.maxLife) { particles.splice(i, 1); continue; }
+    p.vy += p.gravity * dt;
+    p.vx *= p.drag; p.vy *= p.drag; p.vz *= p.drag;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+    p.size += p.grow * dt;
+  }
+}
+
+// ============================================================================
+// 11. SCENE RENDERER (Shadow Pass + Main PBR Pass + Transparent & FX Pass)
+// ============================================================================
+const opaqueList = [];
+const transList = [];
+
+function queueMesh(mesh, model, opts = {}) {
+  const item = {
+    mesh,
+    model,
+    color: opts.color || [1, 1, 1, 1],
+    emissive: opts.emissive || [0, 0, 0],
+    roughness: opts.roughness ?? 0.65,
+    metallic: opts.metallic ?? 0.0,
+    furSheen: opts.furSheen ?? 0.0,
+    subsurface: opts.subsurface ?? 0.0,
+    tex: opts.tex || null,
+    texStrength: opts.texStrength ?? (opts.tex ? 1.0 : 0.0),
+    texScale: opts.texScale || [1, 1],
+    glowPulse: opts.glowPulse ?? 0.0,
+    glass: opts.glass ? 1.0 : 0.0,
+    castShadow: opts.castShadow !== false,
+    recvShadow: opts.recvShadow !== false ? 1.0 : 0.0,
+    doubleSided: !!opts.doubleSided,
+    sunWindow: opts.sunWindow ? 1.0 : 0.0,
+    sortOrder: opts.sortOrder ?? (opts.glass ? 3 : 1)
+  };
+  if (item.color[3] < 0.99 || item.glass > 0.5) transList.push(item);
+  else opaqueList.push(item);
+}
+
+// Determine which prop should catch a subtle morning sunlit breath glint (zero arrows/icons!)
+function getSubtleGlint(propName) {
+  if (state.pointer.down || state.autoAction) return 0;
+  const pulse = (Math.sin(state.time * 2.8) * 0.5 + 0.5) * 0.85 + 0.15;
+  const milkReady = state.capped && state.mixProgress >= 0.99 && state.milkAmount > 0.01;
+  if (!state.capped) {
+    if (state.powderScoops < 2 && propName === "tin") return pulse;
+    if (state.waterAmount < 0.85 && propName === "pitcher") return pulse * (state.powderScoops >= 1 ? 1.0 : 0.6);
+    if (state.powderScoops >= 1 && state.waterAmount >= 0.45 && propName === "cap") return pulse * 1.15;
+  } else if (state.mixProgress < 0.99) {
+    if (propName === "bottle") return pulse * 1.15;
+  } else if (milkReady) {
+    if (propName === "bottle") return pulse * 1.1;
+  } else {
+    if (state.calf.milkMustache > 0.2 && propName === "towel") return pulse;
+    if (state.calf.milkMustache <= 0.2 && state.calf.coatSheen < 0.65 && propName === "brush") return pulse;
+    if (state.hasCrown && !state.crownOnCalf && propName === "crown") return pulse;
+    if (state.hasRibbon && !state.ribbonOnCalf && propName === "ribbon") return pulse;
+  }
+  return 0;
+}
+
+function buildScene() {
+  opaqueList.length = 0;
+  transList.length = 0;
+  const t = state.time;
+
+  // ==========================================================================
+  // A. SUN-DRENCHED MORNING WOODEN BARN ENVIRONMENT
+  // ==========================================================================
+  // Straw-covered barn floor
+  queueMesh(MESH.box, m4TRS([0, -0.05, -0.4], [0, 0, 0], [5.8, 0.1, 4.8]), {
+    color: [0.88, 0.72, 0.44, 1], roughness: 0.92, tex: TEX.straw, texScale: [3.2, 2.8], castShadow: false
+  });
+  // Sculpted golden straw mounds & 580+ 3D individual sunlit straw blades!
+  queueMesh(MESH.sphere, m4TRS([-0.9, 0.02, -0.9], [0, 0.3, 0], [1.1, 0.13, 0.9]), {
+    color: [0.92, 0.77, 0.45, 1], roughness: 0.92, tex: TEX.straw, texScale: [2.5, 2.5], castShadow: false
+  });
+  queueMesh(MESH.sphere, m4TRS([0.95, 0.02, -0.75], [0, -0.4, 0], [1.0, 0.14, 0.85]), {
+    color: [0.90, 0.75, 0.43, 1], roughness: 0.92, tex: TEX.straw, texScale: [2.5, 2.5], castShadow: false
+  });
+  queueMesh(MESH.strawField, m4Identity(), {
+    color: [1, 1, 1, 1], roughness: 0.82, furSheen: 0.25, doubleSided: true, castShadow: false
+  });
+
+  // Back wooden barn wall (warm aged cedar planks)
+  queueMesh(MESH.box, m4TRS([0, 1.35, -2.18], [0, 0, 0], [6.2, 3.2, 0.12]), {
+    color: [0.76, 0.56, 0.39, 1], roughness: 0.86, tex: TEX.wood, texScale: [3.0, 2.0], castShadow: false
+  });
+  // Side barn timber walls
+  queueMesh(MESH.box, m4TRS([-2.45, 1.35, -0.2], [0, 0, 0], [0.14, 3.2, 4.8]), {
+    color: [0.70, 0.51, 0.35, 1], roughness: 0.88, tex: TEX.wood, texScale: [2.5, 2.0], castShadow: false
+  });
+  queueMesh(MESH.box, m4TRS([2.45, 1.35, -0.2], [0, 0, 0], [0.14, 3.2, 4.8]), {
+    color: [0.72, 0.53, 0.36, 1], roughness: 0.88, tex: TEX.wood, texScale: [2.5, 2.0], castShadow: false
+  });
+
+  // High Morning Sunlit Barn Window (upper-left) with warm cedar slats!
+  queueMesh(MESH.box, m4TRS([-1.05, 1.98, -2.09], [0, 0, 0], [1.22, 0.86, 0.04]), {
+    color: [1, 1, 1, 1], sunWindow: true, castShadow: false, recvShadow: false
+  });
+  // Window frame & sill
+  const winFrameCol = [0.62, 0.44, 0.29, 1];
+  queueMesh(MESH.box, m4TRS([-1.05, 1.53, -1.96], [0, 0, 0], [1.34, 0.08, 0.28]), { color: winFrameCol, roughness: 0.82, tex: TEX.wood });
+  queueMesh(MESH.box, m4TRS([-1.05, 2.43, -2.02], [0, 0, 0], [1.34, 0.08, 0.16]), { color: winFrameCol, roughness: 0.82, tex: TEX.wood });
+  queueMesh(MESH.box, m4TRS([-1.68, 1.98, -2.02], [0, 0, 0], [0.09, 0.96, 0.16]), { color: winFrameCol, roughness: 0.82, tex: TEX.wood });
+  queueMesh(MESH.box, m4TRS([-0.42, 1.98, -2.02], [0, 0, 0], [0.09, 0.96, 0.16]), { color: winFrameCol, roughness: 0.82, tex: TEX.wood });
+  queueMesh(MESH.box, m4TRS([-1.05, 1.98, -2.03], [0, 0, 0], [0.055, 0.88, 0.08]), { color: winFrameCol, roughness: 0.82, tex: TEX.wood });
+  queueMesh(MESH.box, m4TRS([-1.05, 1.98, -2.03], [0, 0, 0], [1.24, 0.05, 0.08]), { color: winFrameCol, roughness: 0.82, tex: TEX.wood });
+
+  // Vertical structural timber beams & diagonal barn brace
+  for (const bx of [-1.85, 0.05, 1.85]) {
+    queueMesh(MESH.box, m4TRS([bx, 1.35, -2.05], [0, 0, 0], [0.16, 3.0, 0.16]), {
+      color: [0.64, 0.46, 0.30, 1], roughness: 0.86, tex: TEX.wood, texScale: [0.5, 2.2]
+    });
+  }
+  queueMesh(MESH.box, m4TRS([1.2, 2.08, -2.04], [0, 0, -0.58], [0.95, 0.11, 0.11]), {
+    color: [0.65, 0.47, 0.31, 1], roughness: 0.86, tex: TEX.wood
+  });
+
+  // Little Terracotta Pot with White Morning Daisies on the Sunlit Windowsill
+  const potM = m4Translate(-0.62, 1.57, -1.92);
+  queueMesh(MESH.cyl, m4Mul(potM, m4TRS([0, 0.055, 0], [0, 0, 0], [0.058, 0.11, 0.058])), {
+    color: [0.78, 0.44, 0.30, 1], roughness: 0.78
+  });
+  queueMesh(MESH.sphere, m4Mul(potM, m4TRS([0, 0.135, 0], [0, 0, 0], [0.082, 0.055, 0.075])), {
+    color: [0.36, 0.58, 0.30, 1], roughness: 0.82
+  });
+  for (const [dx, dy, dz] of [[-0.04, 0.18, 0.03], [0.035, 0.19, 0.02], [0.0, 0.21, -0.02], [-0.02, 0.16, -0.04]]) {
+    queueMesh(MESH.sphere, m4Mul(potM, m4TRS([dx, dy, dz], [0, 0, 0], [0.022, 0.012, 0.022])), {
+      color: [1.0, 0.99, 0.95, 1], roughness: 0.55, subsurface: 0.4
+    });
+    queueMesh(MESH.sphere, m4Mul(potM, m4TRS([dx, dy + 0.006, dz], [0, 0, 0], [0.009, 0.009, 0.009])), {
+      color: [0.98, 0.78, 0.22, 1], roughness: 0.45
+    });
+  }
+
+  // Rustic Galvanized Steel Milk Can in background right corner (authentic dairy barn!)
+  queueMesh(MESH.milkCan, m4TRS([1.38, 0.02, -1.42], [0, 0.4, 0], [1, 1, 1]), {
+    color: [0.76, 0.78, 0.80, 1], roughness: 0.36, metallic: 0.78
+  });
+  queueMesh(MESH.box, m4TRS([1.56, 0.38, -1.42], [0, 0, 0.2], [0.08, 0.025, 0.025]), {
+    color: [0.68, 0.70, 0.72, 1], roughness: 0.38, metallic: 0.78
+  });
+
+  // Calf Pen Wooden Posts & Smooth Front Feeding Rail
+  const postCol = [0.74, 0.55, 0.37, 1];
+  for (const px of [-1.22, 1.22]) {
+    queueMesh(MESH.box, m4TRS([px, 0.74, 0.52], [0, 0, 0], [0.13, 1.48, 0.13]), {
+      color: postCol, roughness: 0.80, tex: TEX.wood, texScale: [0.5, 1.6]
+    });
+  }
+  // Smooth low front horizontal rail (calf leans adorably right over this!)
+  queueMesh(MESH.box, m4TRS([0, 0.50, 0.52], [0, 0, 0], [2.52, 0.11, 0.075]), {
+    color: [0.80, 0.62, 0.43, 1], roughness: 0.76, tex: TEX.wood, texScale: [2.2, 0.3]
+  });
+  // Left & right side half-rails leaving wide inviting center window for calf's head & neck!
+  queueMesh(MESH.box, m4TRS([-0.92, 0.88, 0.52], [0, 0, 0], [0.66, 0.095, 0.07]), {
+    color: [0.82, 0.64, 0.45, 1], roughness: 0.75, tex: TEX.wood, texScale: [0.8, 0.3]
+  });
+  queueMesh(MESH.box, m4TRS([0.92, 0.88, 0.52], [0, 0, 0], [0.66, 0.095, 0.07]), {
+    color: [0.82, 0.64, 0.45, 1], roughness: 0.75, tex: TEX.wood, texScale: [0.8, 0.3]
+  });
+  // Side pen rails running back into barn
+  for (const sx of [-1.22, 1.22]) {
+    queueMesh(MESH.box, m4TRS([sx, 0.88, -0.58], [0, 0, 0], [0.07, 0.095, 2.2]), {
+      color: [0.76, 0.58, 0.40, 1], roughness: 0.80, tex: TEX.wood, texScale: [2.0, 0.3]
+    });
+    queueMesh(MESH.box, m4TRS([sx, 0.48, -0.58], [0, 0, 0], [0.07, 0.095, 2.2]), {
+      color: [0.74, 0.56, 0.38, 1], roughness: 0.80, tex: TEX.wood, texScale: [2.0, 0.3]
+    });
+  }
+
+  // Hanging Brass Barn Bell on Left Post Bracket
+  queueMesh(MESH.box, m4TRS([-1.10, 1.46, 0.52], [0, 0, 0], [0.24, 0.04, 0.04]), {
+    color: [0.42, 0.34, 0.28, 1], roughness: 0.55, metallic: 0.65
+  });
+  const bellM = m4Mul(m4Translate(-1.06, 1.44, 0.52), m4RotZ(state.bell.angle));
+  queueMesh(MESH.bell, m4Mul(bellM, m4Translate(0, -0.11, 0)), {
+    color: [0.92, 0.76, 0.42, 1], roughness: 0.28, metallic: 0.86
+  });
+  queueMesh(MESH.sphere, m4Mul(bellM, m4TRS([0, -0.115, 0], [0, 0, 0], [0.015, 0.015, 0.015])), {
+    color: [0.78, 0.60, 0.28, 1], roughness: 0.32, metallic: 0.82
+  });
+
+  // Foreground Warm Wooden Feeding Bench / Table (right in front of child!)
+  queueMesh(MESH.box, m4TRS([0, BENCH_Y - 0.035, 1.00], [0, 0, 0], [2.25, 0.07, 0.58]), {
+    color: [0.85, 0.67, 0.47, 1], roughness: 0.70, tex: TEX.wood, texScale: [2.2, 0.7]
+  });
+  for (const lx of [-0.95, 0.95]) {
+    queueMesh(MESH.box, m4TRS([lx, BENCH_Y * 0.5 - 0.04, 1.00], [0, 0, 0], [0.10, BENCH_Y, 0.42]), {
+      color: [0.70, 0.52, 0.35, 1], roughness: 0.82, tex: TEX.wood
+    });
+  }
+
+  // ==========================================================================
+  // B. THE PALE-FAWN JERSEY CALF (Sculpted, Expressive, Plush!)
+  // ==========================================================================
+  const cf = state.calf;
+  const breath = Math.sin(t * 2.1) * 0.014;
+  const weightShift = Math.sin(t * 0.75) * 0.018;
+  const bodyY = 0.61 + cf.hopY + breath * 0.4;
+  const bodyPos = [cf.pos[0] + weightShift, bodyY, cf.pos[2] + cf.leanZ * 0.55];
+  const bodyPitch = (cf.pranceTimer > 0 ? -cf.hopY * 1.4 : 0) + cf.leanZ * 0.16;
+  const bodyM = m4TRS(bodyPos, [bodyPitch, cf.yaw + Math.sin(t * 0.55) * 0.03, weightShift * 0.6], [1, 1, 1]);
+
+  const calfFurMat = {
+    color: [1.0, 0.99, 0.97, 1],
+    roughness: lerp(0.80, 0.56, cf.coatSheen),
+    furSheen: lerp(0.85, 1.25, cf.coatSheen),
+    tex: TEX.fur,
+    texStrength: 0.42,
+    texScale: [2.6, 2.2]
+  };
+
+  // Torso (gently fuller tummy as she drinks!)
+  const tummyScale = 1.0 + cf.tummyFull * 0.055 + breath;
+  queueMesh(MESH.calfTorso, m4Mul(bodyM, m4Scale(tummyScale, 1.0 + breath * 0.8, 1.0)), calfFurMat);
+
+  // 4 Delicate Calf Legs (front legs lift joyfully during hop-prance!)
+  const legDefs = [
+    { x: -0.125, z:  0.26, front: true,  ph: 0.0 },
+    { x:  0.125, z:  0.26, front: true,  ph: 0.6 },
+    { x: -0.130, z: -0.27, front: false, ph: 1.8 },
+    { x:  0.130, z: -0.27, front: false, ph: 2.4 }
+  ];
+  for (const lg of legDefs) {
+    const step = cf.pranceTimer > 0
+      ? Math.sin(cf.hopPhase + lg.ph) * (lg.front ? 0.52 : 0.25)
+      : (lg.front ? cf.leanZ * 0.45 : -cf.leanZ * 0.2);
+    const kneeBend = cf.pranceTimer > 0 && lg.front ? Math.max(0, Math.sin(cf.hopPhase + lg.ph)) * 0.65 : 0.04;
+    const hipM = m4Mul(bodyM, m4TRS([lg.x, -0.04, lg.z], [step, 0, 0], [1, 1, 1]));
+    queueMesh(MESH.calfLegUpper, hipM, calfFurMat);
+    const kneeM = m4Mul(hipM, m4TRS([0, -0.26, 0.005], [-step * 0.55 - kneeBend, 0, 0], [1, 1, 1]));
+    queueMesh(MESH.calfLegLower, kneeM, calfFurMat);
+  }
+
+  // Happy Wagging Tail!
+  const tailWag = Math.sin(cf.tailAngle) * (state.drinking ? 0.62 : (cf.bliss > 0.3 ? 0.48 : 0.22));
+  const tailLift = state.drinking || cf.pranceTimer > 0 ? 0.42 : 0.14;
+  const tailM = m4Mul(bodyM, m4TRS([0, 0.08, -0.42], [tailLift, 0, tailWag], [1, 1, 1]));
+  queueMesh(MESH.calfTail, tailM, calfFurMat);
+
+  // Graceful Neck (leaning affectionately toward child)
+  const neckM = m4Mul(bodyM, m4TRS([0, 0.14, 0.31], [0.22 + cf.leanZ * 0.72 + cf.headPitch * 0.35, cf.headYaw * 0.38, cf.headRoll * 0.35], [1, 1, 1]));
+  queueMesh(MESH.calfNeck, neckM, calfFurMat);
+
+  // Unlockable Sweet Pastel Ribbon + Tiny Gold Bell around Neck!
+  if (state.ribbonOnCalf) {
+    const ribM = m4Mul(neckM, m4TRS([0, 0.13, 0.06], [0.35, 0, 0], [0.125, 0.022, 0.135]));
+    queueMesh(MESH.cyl, ribM, { color: [0.95, 0.62, 0.68, 1], roughness: 0.55 });
+    const bellNeckM = m4Mul(neckM, m4TRS([0, 0.09, 0.19], [0, 0, Math.sin(t * 7) * (state.drinking ? 0.2 : 0.05)], [0.025, 0.025, 0.025]));
+    queueMesh(MESH.sphere, bellNeckM, { color: [0.95, 0.80, 0.38, 1], roughness: 0.25, metallic: 0.88 });
+  }
+
+  // Adorable Sculpted Jersey Calf Head!
+  const headM = m4Mul(neckM, m4TRS([0, 0.29, 0.14], [-0.15 + cf.headPitch * 0.65, cf.headYaw * 0.62, cf.headRoll * 0.65], [1, 1, 1]));
+  queueMesh(MESH.calfHead, headM, { ...calfFurMat, subsurface: 0.22 });
+
+  // Cache live world positions of head, nose, and mouth for interactions & nursing!
+  cf.headWorld  = m4TransformPoint(headM, [0, 0.04, 0.04]);
+  cf.noseWorld  = m4TransformPoint(headM, [0, -0.072, 0.265]);
+  cf.mouthWorld = m4TransformPoint(headM, [0, -0.105, 0.235]);
+
+  // Soft fluffy forehead hair tuft between ears
+  queueMesh(MESH.foreheadTuft, m4Mul(headM, m4TRS([0, 0.145, -0.03], [-0.15, 0, 0], [1, 1, 1])), {
+    ...calfFurMat, color: [0.95, 0.84, 0.66, 1]
+  });
+
+  // Wet Dark Nostril Indentations (subtle glossy detail on muzzle)
+  for (const s of [-1, 1]) {
+    queueMesh(MESH.sphere, m4Mul(headM, m4TRS([s * 0.033, -0.068, 0.264], [0, s * 0.3, 0], [0.011, 0.0085, 0.007])), {
+      color: [0.12, 0.09, 0.09, 1], roughness: 0.22
+    });
+  }
+
+  // Articulated Lower Jaw & Cute Pink Tongue
+  const jawM = m4Mul(headM, m4TRS([0, -0.098, 0.095], [cf.jawOpen, 0, 0], [1, 1, 1]));
+  queueMesh(MESH.calfJaw, jawM, calfFurMat);
+  if (cf.tongueOut > 0.04) {
+    const tongueCurl = Math.sin(t * 10) * 0.16;
+    const tongueM = m4Mul(jawM, m4TRS([tongueCurl * 0.04, 0.012, 0.09 + cf.tongueOut * 0.065], [-0.28 * cf.tongueOut, tongueCurl, 0], [1, 1, 0.7 + cf.tongueOut * 0.5]));
+    queueMesh(MESH.calfTongue, tongueM, { color: [0.96, 0.58, 0.64, 1], roughness: 0.28, subsurface: 0.55 });
+  }
+
+  // Creamy White Milk Mustache around Muzzle (appears while drinking, wipes away with towel!)
+  if (cf.milkMustache > 0.03) {
+    const ms = cf.milkMustache;
+    const blobs = [
+      [0.0,   -0.062, 0.268, 0.036, 0.018, 0.014],
+      [-0.034,-0.072, 0.258, 0.028, 0.016, 0.013],
+      [ 0.036,-0.070, 0.258, 0.027, 0.015, 0.013],
+      [ 0.012,-0.048, 0.265, 0.016, 0.014, 0.011],
+      [-0.016,-0.092, 0.246, 0.024, 0.014, 0.012]
+    ];
+    for (const [bx, by, bz, sx, sy, sz] of blobs) {
+      queueMesh(MESH.milkBlob, m4Mul(headM, m4TRS([bx, by, bz], [0, 0, 0], [sx * ms, sy * ms, sz * ms])), {
+        color: [1.0, 0.99, 0.94, clamp(ms * 1.15, 0, 0.96)], roughness: 0.34, subsurface: 0.4, castShadow: false
+      });
+    }
+  }
+
+  // Big Liquid Expressive Jersey Eyes + Bright Morning Catchlights + Soft Upper Eyelids + Delicate Lashes!
+  const lidClose = clamp(Math.max(cf.blink, cf.bliss * 0.62), 0, 0.94);
+  for (const s of [-1, 1]) {
+    const eyeM = m4Mul(headM, m4TRS([s * 0.102, 0.028, 0.052], [0.05, s * 0.44, 0], [1, 1, 1]));
+    // Glossy deep dark-brown eye
+    queueMesh(MESH.eyeBall, eyeM, { color: [1, 1, 1, 1], roughness: 0.04, metallic: 0.04 });
+    // Crisp morning window catchlight glint (gives instant puppy/calf sparkle!)
+    if (lidClose < 0.75) {
+      queueMesh(MESH.sphere, m4Mul(eyeM, m4TRS([-0.008, 0.009, 0.0245], [0, 0, 0], [0.0055, 0.0055, 0.003])), {
+        color: [1, 1, 1, 1], emissive: [1.2, 1.15, 1.05], roughness: 0.05, castShadow: false, recvShadow: false
+      });
+    }
+    // Soft furry upper hemisphere eyelid (wide open at -0.82, closed smoothly at +0.26!)
+    const lidPitch = lerp(-0.82, 0.26, lidClose);
+    const lidM = m4Mul(eyeM, m4TRS([0, 0.002, 0.0], [lidPitch, 0, 0], [1, 1, 1]));
+    queueMesh(MESH.eyelid, lidM, { color: [0.80, 0.64, 0.46, 1], roughness: 0.82, furSheen: 0.4, doubleSided: true });
+    // Delicate Jersey eyelashes
+    queueMesh(MESH.lash, m4Mul(eyeM, m4TRS([s * 0.004, 0.022 - lidClose * 0.018, 0.024], [0.25, s * 0.15, -s * 0.25], [1, 1, 1])), {
+      color: [0.16, 0.11, 0.08, 1], roughness: 0.7
+    });
+    // Subtle warm rose cheek glow when in pure bliss (petted, brushed, or drinking warm milk!)
+    if (cf.bliss > 0.12) {
+      queueMesh(MESH.sphere, m4Mul(headM, m4TRS([s * 0.112, -0.022, 0.075], [0, s * 0.4, 0], [0.032, 0.022, 0.018])), {
+        color: [0.98, 0.62, 0.56, cf.bliss * 0.34], roughness: 0.9, castShadow: false, sortOrder: 0
+      });
+    }
+  }
+
+  // Wide Velvety Cupped Jersey Ears (subsurface backlit by morning sun, positive determinant meshes!)
+  for (const s of [-1, 1]) {
+    const ea = s < 0 ? cf.earL : cf.earR;
+    const earBase = m4Mul(headM, m4TRS([s * 0.108, 0.082, -0.045], [0.10, s * -0.28 + s * ea * 0.35, s * (-0.12 + ea * 0.55)], [1, 1, 1]));
+    queueMesh(s > 0 ? MESH.calfEarR : MESH.calfEarL, earBase, {
+      ...calfFurMat, subsurface: 0.65, doubleSided: true
+    });
+  }
+
+  // Unlockable White Clover & Buttercup Flower Crown on Calf's Head!
+  function drawFlowerCrown(baseM, glow = 0) {
+    queueMesh(MESH.cyl, m4Mul(baseM, m4Scale(0.105, 0.014, 0.105)), {
+      color: [0.42, 0.64, 0.34, 1], roughness: 0.78, glowPulse: glow
+    });
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * TAU;
+      const fx = Math.cos(a) * 0.105, fz = Math.sin(a) * 0.105;
+      const isButtercup = i % 2 === 1;
+      const fm = m4Mul(baseM, m4TRS([fx, 0.016, fz], [0.2, -a, 0], [1, 1, 1]));
+      queueMesh(MESH.sphere, m4Mul(fm, m4Scale(0.022, 0.012, 0.022)), {
+        color: isButtercup ? [1.0, 0.88, 0.32, 1] : [1.0, 0.98, 0.94, 1],
+        roughness: 0.55, subsurface: 0.4, glowPulse: glow
+      });
+      queueMesh(MESH.sphere, m4Mul(fm, m4TRS([0, 0.008, 0], [0, 0, 0], [0.009, 0.009, 0.009])), {
+        color: [0.96, 0.72, 0.22, 1], roughness: 0.5
+      });
+    }
+  }
+  if (state.crownOnCalf) {
+    drawFlowerCrown(m4Mul(headM, m4TRS([0, 0.135, -0.02], [-0.14, 0, 0], [1, 1, 1])), 0);
+  } else if (state.hasCrown) {
+    drawFlowerCrown(m4TRS(state.crown.pos, state.crown.rot, [1, 1, 1]), getSubtleGlint("crown"));
+  }
+  if (state.hasRibbon && !state.ribbonOnCalf) {
+    const rm = m4TRS(state.ribbon.pos, state.ribbon.rot, [1, 1, 1]);
+    queueMesh(MESH.cyl, m4Mul(rm, m4Scale(0.085, 0.022, 0.085)), {
+      color: [0.95, 0.62, 0.68, 1], roughness: 0.55, glowPulse: getSubtleGlint("ribbon")
+    });
+    queueMesh(MESH.sphere, m4Mul(rm, m4TRS([0, 0.01, 0.085], [0, 0, 0], [0.022, 0.022, 0.022])), {
+      color: [0.96, 0.80, 0.36, 1], roughness: 0.25, metallic: 0.85, glowPulse: getSubtleGlint("ribbon")
+    });
+  }
+
+  // ==========================================================================
+  // C. BARN FRIENDS (Golden-White Butterfly & Plump Morning Sparrow)
+  // ==========================================================================
+  if (state.butterfly.active) {
+    const bf = state.butterfly;
+    const flap = Math.sin(bf.wingPhase) * 0.88;
+    const bfM = m4TRS(bf.pos, [0.15, Math.sin(t * 1.4) * 0.5, 0], [1, 1, 1]);
+    queueMesh(MESH.sphere, m4Mul(bfM, m4Scale(0.006, 0.007, 0.022)), { color: [0.35, 0.26, 0.18, 1], roughness: 0.7 });
+    queueMesh(MESH.wingR, m4Mul(bfM, m4RotZ(flap)), { color: [1, 1, 1, 0.94], roughness: 0.45, subsurface: 0.7, doubleSided: true, castShadow: false });
+    queueMesh(MESH.wingL, m4Mul(bfM, m4RotZ(-flap)), { color: [1, 1, 1, 0.94], roughness: 0.45, subsurface: 0.7, doubleSided: true, castShadow: false });
+  }
+
+  // Plump Morning Sparrow perched on window sill (later visits fence rail!)
+  const sp = state.sparrow;
+  const spYaw = sp.onRail ? -0.8 : 0.4 + Math.sin(t * 1.2) * 0.25;
+  const spM = m4TRS([sp.pos[0], sp.pos[1] + sp.hopY, sp.pos[2]], [0, spYaw, 0], [1, 1, 1]);
+  queueMesh(MESH.sphere, m4Mul(spM, m4Scale(0.048, 0.042, 0.062)), { color: [0.68, 0.52, 0.38, 1], roughness: 0.82, furSheen: 0.5 });
+  queueMesh(MESH.sphere, m4Mul(spM, m4TRS([0, 0.036, 0.038], [0, 0, 0], [0.032, 0.030, 0.034])), { color: [0.62, 0.44, 0.30, 1], roughness: 0.8 });
+  queueMesh(MESH.sphere, m4Mul(spM, m4TRS([0, -0.008, 0.015], [0, 0, 0], [0.042, 0.034, 0.052])), { color: [0.92, 0.87, 0.79, 1], roughness: 0.82 });
+  // Tiny sparrow beak & eyes
+  queueMesh(MESH.cyl, m4Mul(spM, m4TRS([0, 0.034, 0.072], [PI * 0.5, 0, 0], [0.008, 0.018, 0.008])), { color: [0.88, 0.68, 0.28, 1], roughness: 0.45 });
+
+  // ==========================================================================
+  // D. FOREGROUND FEEDING BENCH PROPS (Tactile, High-Craft Materiality!)
+  // ==========================================================================
+
+  // 1) Cream Enamel Warm Water Pitcher
+  const pitM = m4TRS(state.pitcher.pos, state.pitcher.rot, [1, 1, 1]);
+  const pitGlint = getSubtleGlint("pitcher");
+  queueMesh(MESH.pitcherBody, pitM, {
+    color: [1, 1, 1, 1], roughness: 0.26, metallic: 0.05, doubleSided: true, glowPulse: pitGlint
+  });
+  queueMesh(MESH.pitcherHandle, m4Mul(pitM, m4TRS([-0.066, 0.115, 0], [0, 0, 0], [1, 1, 1])), {
+    color: [0.35, 0.50, 0.62, 1], roughness: 0.30, glowPulse: pitGlint
+  });
+  // Glistening warm water surface visible inside pitcher
+  queueMesh(MESH.cyl, m4Mul(pitM, m4TRS([0, 0.165, 0], [0, 0, 0], [0.064, 0.008, 0.064])), {
+    color: [0.76, 0.88, 0.95, 0.72], roughness: 0.08, castShadow: false
+  });
+
+  // Dynamic glistening water stream while pouring!
+  if (state.streamActive > 0.05) {
+    const mid = v3Lerp(state.streamFrom, state.streamTo, 0.5);
+    const diff = v3Sub(state.streamTo, state.streamFrom);
+    const len = v3Len(diff);
+    const tiltZ = Math.atan2(diff[0], -diff[1]);
+    queueMesh(MESH.stream, m4TRS(mid, [0, 0, tiltZ], [1, len, 1]), {
+      color: [0.85, 0.94, 1.0, 0.68 * state.streamActive], roughness: 0.06, glass: true, castShadow: false
+    });
+  }
+
+  // 2) Milk Replacer Powder Tin + Wooden Scoop
+  const tinGlint = getSubtleGlint("tin");
+  const tinM = m4TRS(PROP_HOME.tin, [0, 0.15, 0], [1, 1, 1]);
+  queueMesh(MESH.powderTin, tinM, { color: [1, 1, 1, 1], roughness: 0.36, metallic: 0.15, glowPulse: tinGlint });
+  queueMesh(MESH.powderSurface, m4Mul(tinM, m4Translate(0, 0.118, 0)), {
+    color: [0.99, 0.96, 0.87, 1], roughness: 0.92, glowPulse: tinGlint
+  });
+  // Wooden Scoop
+  const scM = m4TRS(state.scoop.pos, state.scoop.rot, [1, 1, 1]);
+  queueMesh(MESH.scoopBowl, scM, { color: [0.86, 0.68, 0.44, 1], roughness: 0.72, tex: TEX.wood, glowPulse: tinGlint });
+  queueMesh(MESH.scoopHandle, m4Mul(scM, m4TRS([-0.065, 0.036, 0], [0, 0, 1.32], [1, 1, 1])), {
+    color: [0.82, 0.64, 0.40, 1], roughness: 0.74, tex: TEX.wood, glowPulse: tinGlint
+  });
+  if (state.scoop.hasPowder) {
+    queueMesh(MESH.sphere, m4Mul(scM, m4TRS([0, 0.025, 0], [0, 0, 0], [0.026, 0.018, 0.026])), {
+      color: [1.0, 0.97, 0.88, 1], roughness: 0.92
+    });
+  }
+
+  // 3) Clear Glass Calf Nursing Bottle + Dynamic Internal Powder & Swirling Warm Milk!
+  const bGlint = getSubtleGlint("bottle");
+  const botM = m4TRS(state.bottle.pos, state.bottle.rot, [1, 1, 1]);
+
+  // Powder mound at bottom of bottle (dissolves smoothly as child shakes!)
+  const undissolvedPowder = (state.powderScoops / 2) * (1 - state.mixProgress);
+  if (undissolvedPowder > 0.02) {
+    const ph = 0.048 * undissolvedPowder;
+    queueMesh(MESH.powderMound, m4Mul(botM, m4TRS([0, 0.012, 0], [0, 0, 0], [1, ph, 1])), {
+      color: [1.0, 0.96, 0.84, 0.96], roughness: 0.92, castShadow: false, sortOrder: 0
+    });
+  }
+
+  // Dynamic Liquid inside bottle: shifts from clear warm water -> rich creamy ivory milk, drains as calf gulps!
+  const rawFill = state.mixProgress >= 0.99 ? state.milkAmount : state.waterAmount;
+  if (rawFill > 0.015) {
+    const h = 0.175 * rawFill;
+    const isInverted = Math.abs(state.bottle.rot[0]) > 1.1;
+    // When inverted for nursing, milk rests toward the bottle shoulder/nipple end!
+    const liqY = isInverted ? (0.205 - h * 0.5) : (0.014 + h * 0.5);
+    const mixCol = [
+      lerp(0.84, 1.0, state.mixProgress),
+      lerp(0.92, 0.98, state.mixProgress),
+      lerp(0.96, 0.90, state.mixProgress),
+      lerp(0.46, 0.97, state.mixProgress)
+    ];
+    const sloshM = m4Mul(botM, m4TRS([0, liqY, 0], [0, 0, state.bottle.sloshX * 0.35], [1, h, 1]));
+    queueMesh(MESH.bottleLiquid, sloshM, {
+      color: mixCol, roughness: lerp(0.12, 0.32, state.mixProgress), subsurface: 0.45 * state.mixProgress, castShadow: false, sortOrder: 1
+    });
+    // Frothy milk foam ring on top of mixed milk!
+    if (state.mixProgress > 0.25) {
+      const foamY = isInverted ? (0.205 - h) : (0.014 + h);
+      queueMesh(MESH.cyl, m4Mul(botM, m4TRS([0, foamY, 0], [0, 0, state.bottle.sloshX * 0.35], [0.060, 0.012, 0.060])), {
+        color: [1.0, 0.995, 0.96, 0.88 * state.mixProgress], roughness: 0.55, castShadow: false, sortOrder: 2
+      });
+    }
+  }
+
+  // Clear Glass Bottle Shell (rendered in transparent pass with Fresnel reflections!)
+  queueMesh(MESH.bottleGlass, botM, {
+    color: [0.95, 0.98, 1.0, 0.22], roughness: 0.06, glass: true, glowPulse: bGlint, doubleSided: true, sortOrder: 3
+  });
+
+  // Soft Peach Rubber Calf Nipple & Cream Collar (either next to bottle or snapped snugly onto bottle!)
+  const capGlint = state.capped ? bGlint : getSubtleGlint("cap");
+  const capM = state.capped
+    ? m4Mul(botM, m4Translate(0, 0.232, 0))
+    : m4TRS(state.cap.pos, state.cap.rot, [1, 1, 1]);
+  queueMesh(MESH.bottleCollar, capM, {
+    color: [0.96, 0.94, 0.88, 1], roughness: 0.35, glowPulse: capGlint
+  });
+  queueMesh(MESH.bottleNipple, m4Mul(capM, m4Translate(0, 0.032, 0)), {
+    color: [0.92, 0.64, 0.54, 1], roughness: 0.44, subsurface: 0.65, glowPulse: capGlint
+  });
+
+  // 4) Folded Soft White Cotton Towel
+  const towM = m4TRS(state.towel.pos, state.towel.rot, [1, 1, 1]);
+  queueMesh(MESH.towel, m4Mul(towM, m4Translate(0, 0.028, 0)), {
+    color: [1, 1, 1, 1], roughness: 0.90, furSheen: 0.45, tex: TEX.linen, texScale: [3, 3], glowPulse: getSubtleGlint("towel")
+  });
+
+  // 5) Soft Wooden Grooming Brush
+  const brGlint = getSubtleGlint("brush");
+  const brM = m4TRS(state.brush.pos, state.brush.rot, [1, 1, 1]);
+  queueMesh(MESH.brushBack, m4Mul(brM, m4Translate(0, 0.038, 0)), {
+    color: [0.80, 0.58, 0.36, 1], roughness: 0.55, tex: TEX.wood, glowPulse: brGlint
+  });
+  queueMesh(MESH.brushBristles, m4Mul(brM, m4Translate(0, 0.019, 0)), {
+    color: [0.95, 0.90, 0.78, 1], roughness: 0.92, furSheen: 0.55, glowPulse: brGlint
+  });
+}
+
+function drawMeshItem(item, prog) {
+  const u = prog.u;
+  gl.uniformMatrix4fv(u.uModel, false, item.model);
+  if (prog === mainProg) {
+    gl.uniformMatrix3fv(u.uNormalMat, false, m4NormalMat3(item.model));
+    gl.uniform4fv(u.uBaseColor, item.color);
+    gl.uniform3fv(u.uEmissive, item.emissive);
+    gl.uniform1f(u.uRoughness, item.roughness);
+    gl.uniform1f(u.uMetallic, item.metallic);
+    gl.uniform1f(u.uFurSheen, item.furSheen);
+    gl.uniform1f(u.uSubsurface, item.subsurface);
+    gl.uniform1f(u.uUseTex, item.tex ? item.texStrength : 0.0);
+    gl.uniform2fv(u.uTexScale, item.texScale);
+    gl.uniform1f(u.uGlowPulse, item.glowPulse);
+    gl.uniform1f(u.uGlass, item.glass);
+    gl.uniform1f(u.uShadowRecv, item.recvShadow);
+    gl.uniform1f(u.uSunWindow, item.sunWindow);
+    if (item.tex) {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, item.tex);
+    }
+  }
+  if (item.doubleSided) gl.disable(gl.CULL_FACE);
+  else gl.enable(gl.CULL_FACE);
+  gl.bindVertexArray(item.mesh.vao);
+  gl.drawElements(gl.TRIANGLES, item.mesh.count, item.mesh.type, 0);
+}
+
+// Render Volumetric Morning Sunbeams + Floating Dust Motes & Particles
+function renderFX() {
+  gl.useProgram(fxProg.prog);
+  gl.uniformMatrix4fv(fxProg.u.uViewProj, false, cam.vp);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, TEX.sprite);
+  gl.uniform1i(fxProg.u.uSprite, 0);
+
+  gl.enable(gl.BLEND);
+  gl.depthMask(false);
+  gl.disable(gl.CULL_FACE);
+
+  // 1) Volumetric Diagonal Morning Sunbeams slanting from upper-left barn window!
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.uniform1f(fxProg.u.uMode, 1.0);
+  const beams = [
+    { top: [-1.35, 2.30, -1.95], bot: [ 0.15, 0.15,  0.45], w: 0.42, a: 0.085 },
+    { top: [-0.82, 2.25, -1.95], bot: [ 0.72, 0.18,  0.65], w: 0.46, a: 0.075 },
+    { top: [-1.10, 1.85, -1.95], bot: [ 0.38, 0.05,  0.95], w: 0.52, a: 0.060 }
+  ];
+  let q = 0;
+  for (const b of beams) {
+    const dir = v3Norm(v3Sub(b.bot, b.top));
+    const view = v3Norm(v3Sub(cam.pos, v3Lerp(b.top, b.bot, 0.5)));
+    const side = v3Scale(v3Norm(v3Cross(dir, view)), b.w);
+    const p0 = v3Sub(b.top, side), p1 = v3Add(b.top, side);
+    const p2 = v3Add(b.bot, v3Scale(side, 1.45)), p3 = v3Sub(b.bot, v3Scale(side, 1.45));
+    const o = q * 36;
+    const verts = [[p0, 0, 0], [p1, 1, 0], [p2, 1, 1], [p3, 0, 1]];
+    for (let k = 0; k < 4; k++) {
+      const vo = o + k * 9;
+      fxData[vo] = verts[k][0][0]; fxData[vo+1] = verts[k][0][1]; fxData[vo+2] = verts[k][0][2];
+      fxData[vo+3] = verts[k][1];  fxData[vo+4] = verts[k][2];
+      fxData[vo+5] = 1.0; fxData[vo+6] = 0.90; fxData[vo+7] = 0.66; fxData[vo+8] = b.a;
+    }
+    q++;
+  }
+  gl.bindVertexArray(fxVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, fxVbo);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, fxData.subarray(0, q * 36));
+  gl.drawElements(gl.TRIANGLES, q * 6, gl.UNSIGNED_SHORT, 0);
+
+  // 2) Billboard Particles (Standard alpha-blended: steam, powder, straw, milk bubbles)
+  gl.uniform1f(fxProg.u.uMode, 0.0);
+  const pushBillboards = (additive) => {
+    let cnt = 0;
+    const addQuad = (x, y, z, sz, r, g, b, a) => {
+      if (cnt >= MAX_FX_QUADS) return;
+      const rx = cam.right[0] * sz, ry = cam.right[1] * sz, rz = cam.right[2] * sz;
+      const ux = cam.up[0] * sz,    uy = cam.up[1] * sz,    uz = cam.up[2] * sz;
+      const o = cnt * 36;
+      const cs = [
+        [x - rx - ux, y - ry - uy, z - rz - uz, 0, 0],
+        [x + rx - ux, y + ry - uy, z + rz - uz, 1, 0],
+        [x + rx + ux, y + ry + uy, z + rz + uz, 1, 1],
+        [x - rx + ux, y - ry + uy, z - rz + uz, 0, 1]
+      ];
+      for (let k = 0; k < 4; k++) {
+        const vo = o + k * 9;
+        fxData[vo]=cs[k][0]; fxData[vo+1]=cs[k][1]; fxData[vo+2]=cs[k][2];
+        fxData[vo+3]=cs[k][3]; fxData[vo+4]=cs[k][4];
+        fxData[vo+5]=r; fxData[vo+6]=g; fxData[vo+7]=b; fxData[vo+8]=a;
+      }
+      cnt++;
+    };
+
+    if (additive) {
+      // Ambient golden morning dust motes drifting softly in sunbeams
+      for (const d of dustMotes) {
+        const mx = d.x + Math.sin(state.time * d.spd + d.ph) * 0.14;
+        const my = d.y + Math.cos(state.time * d.spd * 0.7 + d.ph) * 0.09;
+        const tw = 0.35 + 0.65 * (Math.sin(state.time * 1.8 + d.ph) * 0.5 + 0.5);
+        addQuad(mx, my, d.z, d.sz, 1.0, 0.93, 0.72, 0.42 * tw);
+      }
+    }
+    for (const p of particles) {
+      if (p.additive !== additive) continue;
+      const f = p.life / p.maxLife;
+      const alpha = p.a * Math.sin(clamp(f, 0, 1) * PI);
+      addQuad(p.x, p.y, p.z, p.size, p.r, p.g, p.b, alpha);
+    }
+    if (cnt > 0) {
+      gl.blendFunc(gl.SRC_ALPHA, additive ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, fxData.subarray(0, cnt * 36));
+      gl.drawElements(gl.TRIANGLES, cnt * 6, gl.UNSIGNED_SHORT, 0);
+    }
+  };
+  pushBillboards(false);
+  pushBillboards(true);
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.enable(gl.CULL_FACE);
+}
+
+// ============================================================================
+// 12. MAIN RENDER LOOP & RESPONSIVE VIEWPORT
+// ============================================================================
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+  const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+  cam.aspect = w / h;
+  // Adaptive FOV so all foreground bench props stay reachable even on vertical tablets/phones!
+  const minHalfW = 1.04;
+  const baseFov = 40 * PI / 180;
+  const neededHalfH = minHalfW / Math.max(0.45, cam.aspect);
+  const neededFov = 2 * Math.atan(neededHalfH / 2.02);
+  cam.fovY = clamp(Math.max(baseFov, neededFov), baseFov, 68 * PI / 180);
+}
+window.addEventListener("resize", resize);
+resize();
+
+let lastTime = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - lastTime) * 0.001, 0.05);
+  lastTime = now;
+
+  update(dt);
+
+  // Subtle living camera breathing & gentle focus during feeding
+  const t = state.time;
+  const focusShift = state.drinking ? 0.10 : 0.0;
+  cam.pos = [
+    Math.sin(t * 0.35) * 0.035,
+    1.32 + Math.cos(t * 0.5) * 0.012 - focusShift * 0.25,
+    2.86 - focusShift * 1.6
+  ];
+  cam.target = [0.0, 0.86 + focusShift * 0.65, 0.08];
+  cam.view = m4LookAt(cam.pos, cam.target, [0, 1, 0]);
+  cam.proj = m4Perspective(cam.fovY, cam.aspect, 0.1, 24.0);
+  cam.vp = m4Mul(cam.proj, cam.view);
+  cam.invVP = m4Invert(cam.vp);
+  cam.right = [cam.view[0], cam.view[4], cam.view[8]];
+  cam.up    = [cam.view[1], cam.view[5], cam.view[9]];
+
+  buildScene();
+
+  // ---- Pass 1: Shadow Map ----
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(shadowProg.prog);
+  gl.uniformMatrix4fv(shadowProg.u.uLightVP, false, LIGHT_VP);
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(2.0, 2.5);
+  for (const item of opaqueList) {
+    if (item.castShadow) drawMeshItem(item, shadowProg);
+  }
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+
+  // ---- Pass 2: Main Lit PBR Scene ----
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.24, 0.18, 0.13, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  gl.useProgram(mainProg.prog);
+  gl.uniformMatrix4fv(mainProg.u.uViewProj, false, cam.vp);
+  gl.uniformMatrix4fv(mainProg.u.uLightVP, false, LIGHT_VP);
+  gl.uniform3fv(mainProg.u.uCamPos, cam.pos);
+  gl.uniform3fv(mainProg.u.uLightDir, LIGHT_DIR);
+  gl.uniform3fv(mainProg.u.uLightColor, LIGHT_COLOR);
+  gl.uniform1i(mainProg.u.uTex, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.uniform1i(mainProg.u.uShadowMap, 1);
+
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  for (const item of opaqueList) drawMeshItem(item, mainProg);
+
+  // ---- Pass 3: Translucent Milk, Glass Bottle & Foam (Back-to-front sorted) ----
+  transList.sort((a, b) => {
+    const za = a.model[14], zb = b.model[14];
+    if (Math.abs(za - zb) < 0.09) return a.sortOrder - b.sortOrder;
+    return za - zb;
+  });
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  for (const item of transList) drawMeshItem(item, mainProg);
+
+  // ---- Pass 4: Volumetric Morning Sunbeams & Dust/Steam/Sparkle Particles ----
+  renderFX();
+}
+
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
