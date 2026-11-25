@@ -21,6 +21,7 @@
   "s-33a-opus-v1",
   "s-33a-v1",
   "s-34a-gem-v1",
+  "s-35a-gem-v1",
   "s-36a-gem-v1"
  ],
  "thumbs": {
@@ -74,6 +75,10 @@
   },
   "s-34a-gem-v1": {
    "file": "thumbs/s-34a-gem-v1.jpg",
+   "kind": "real"
+  },
+  "s-35a-gem-v1": {
+   "file": "thumbs/s-35a-gem-v1.jpg",
    "kind": "real"
   },
   "s-36a-gem-v1": {
