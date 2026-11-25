@@ -1,0 +1,4563 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta name="robots" content="noindex,nofollow">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>はむちゃんのほっぺ</title>
+<style>
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #1d1512;
+    touch-action: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas.dragging {
+    cursor: grabbing;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+'use strict';
+
+// ============================================================================
+// 1. MATH & DETERMINISTIC RANDOM UTILITIES
+// ============================================================================
+const PI = Math.PI;
+const TAU = PI * 2;
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt));
+const angleDiff = (a, b) => {
+  let d = (b - a) % TAU;
+  if (d > PI) d -= TAU;
+  if (d < -PI) d += TAU;
+  return d;
+};
+const dampAngle = (a, b, lambda, dt) => a + angleDiff(a, b) * (1 - Math.exp(-lambda * dt));
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20261125);
+const randRange = (a, b) => a + rng() * (b - a);
+
+// Column-major Mat4 helpers
+const M4 = {
+  create: () => {
+    const m = new Float32Array(16);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  identity: (m) => {
+    m.fill(0);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  copy: (out, a) => { out.set(a); return out; },
+  mul: (out, a, b) => {
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],
+          a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11],
+          a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    let b0, b1, b2, b3;
+    b0=b[0]; b1=b[1]; b2=b[2]; b3=b[3];
+    out[0]=b0*a00+b1*a10+b2*a20+b3*a30; out[1]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[2]=b0*a02+b1*a12+b2*a22+b3*a32; out[3]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[4]; b1=b[5]; b2=b[6]; b3=b[7];
+    out[4]=b0*a00+b1*a10+b2*a20+b3*a30; out[5]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[6]=b0*a02+b1*a12+b2*a22+b3*a32; out[7]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[8]; b1=b[9]; b2=b[10]; b3=b[11];
+    out[8]=b0*a00+b1*a10+b2*a20+b3*a30; out[9]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[10]=b0*a02+b1*a12+b2*a22+b3*a32; out[11]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[12]; b1=b[13]; b2=b[14]; b3=b[15];
+    out[12]=b0*a00+b1*a10+b2*a20+b3*a30; out[13]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[14]=b0*a02+b1*a12+b2*a22+b3*a32; out[15]=b0*a03+b1*a13+b2*a23+b3*a33;
+    return out;
+  },
+  translate: (out, a, x, y, z) => {
+    if (out !== a) out.set(a);
+    out[12] = a[0]*x + a[4]*y + a[8]*z + a[12];
+    out[13] = a[1]*x + a[5]*y + a[9]*z + a[13];
+    out[14] = a[2]*x + a[6]*y + a[10]*z + a[14];
+    out[15] = a[3]*x + a[7]*y + a[11]*z + a[15];
+    return out;
+  },
+  scale: (out, a, x, y, z) => {
+    out[0]=a[0]*x; out[1]=a[1]*x; out[2]=a[2]*x; out[3]=a[3]*x;
+    out[4]=a[4]*y; out[5]=a[5]*y; out[6]=a[6]*y; out[7]=a[7]*y;
+    out[8]=a[8]*z; out[9]=a[9]*z; out[10]=a[10]*z; out[11]=a[11]*z;
+    out[12]=a[12]; out[13]=a[13]; out[14]=a[14]; out[15]=a[15];
+    return out;
+  },
+  rotateX: (out, a, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a10=a[4],a11=a[5],a12=a[6],a13=a[7],a20=a[8],a21=a[9],a22=a[10],a23=a[11];
+    if (out !== a) { out.set(a); }
+    out[4]=a10*c+a20*s; out[5]=a11*c+a21*s; out[6]=a12*c+a22*s; out[7]=a13*c+a23*s;
+    out[8]=a20*c-a10*s; out[9]=a21*c-a11*s; out[10]=a22*c-a12*s; out[11]=a23*c-a13*s;
+    return out;
+  },
+  rotateY: (out, a, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a20=a[8],a21=a[9],a22=a[10],a23=a[11];
+    if (out !== a) { out.set(a); }
+    out[0]=a00*c-a20*s; out[1]=a01*c-a21*s; out[2]=a02*c-a22*s; out[3]=a03*c-a23*s;
+    out[8]=a00*s+a20*c; out[9]=a01*s+a21*c; out[10]=a02*s+a22*c; out[11]=a03*s+a23*c;
+    return out;
+  },
+  rotateZ: (out, a, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7];
+    if (out !== a) { out.set(a); }
+    out[0]=a00*c+a10*s; out[1]=a01*c+a11*s; out[2]=a02*c+a12*s; out[3]=a03*c+a13*s;
+    out[4]=a10*c-a00*s; out[5]=a11*c-a01*s; out[6]=a12*c-a02*s; out[7]=a13*c-a03*s;
+    return out;
+  },
+  perspective: (out, fovy, aspect, near, far) => {
+    const f = 1.0 / Math.tan(fovy * 0.5);
+    const nf = 1 / (near - far);
+    out.fill(0);
+    out[0] = f / aspect;
+    out[5] = f;
+    out[10] = (far + near) * nf;
+    out[11] = -1;
+    out[14] = (2 * far * near) * nf;
+    return out;
+  },
+  ortho: (out, l, r, b, t, n, f) => {
+    const lr = 1 / (l - r), bt = 1 / (b - t), nf = 1 / (n - f);
+    out.fill(0);
+    out[0] = -2 * lr;
+    out[5] = -2 * bt;
+    out[10] = 2 * nf;
+    out[12] = (l + r) * lr;
+    out[13] = (t + b) * bt;
+    out[14] = (f + n) * nf;
+    out[15] = 1;
+    return out;
+  },
+  lookAt: (out, eye, center, up) => {
+    let zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
+    let len = Math.hypot(zx, zy, zz);
+    if (len > 1e-6) { zx /= len; zy /= len; zz /= len; }
+    let xx = up[1]*zz - up[2]*zy, xy = up[2]*zx - up[0]*zz, xz = up[0]*zy - up[1]*zx;
+    len = Math.hypot(xx, xy, xz);
+    if (len > 1e-6) { xx /= len; xy /= len; xz /= len; }
+    const yx = zy*xz - zz*xy, yy = zz*xx - zx*xz, yz = zx*xy - zy*xx;
+    out[0]=xx; out[1]=yx; out[2]=zx; out[3]=0;
+    out[4]=xy; out[5]=yy; out[6]=zy; out[7]=0;
+    out[8]=xz; out[9]=yz; out[10]=zz; out[11]=0;
+    out[12]=-(xx*eye[0]+xy*eye[1]+xz*eye[2]);
+    out[13]=-(yx*eye[0]+yy*eye[1]+yz*eye[2]);
+    out[14]=-(zx*eye[0]+zy*eye[1]+zz*eye[2]);
+    out[15]=1;
+    return out;
+  },
+  invert: (out, a) => {
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],
+          a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11],
+          a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    const b00=a00*a11-a01*a10, b01=a00*a12-a02*a10, b02=a00*a13-a03*a10,
+          b03=a01*a12-a02*a11, b04=a01*a13-a03*a11, b05=a02*a13-a03*a12,
+          b06=a20*a31-a21*a30, b07=a20*a32-a22*a30, b08=a20*a33-a23*a30,
+          b09=a21*a32-a22*a31, b10=a21*a33-a23*a31, b11=a22*a33-a23*a32;
+    let det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+    if (!det) return null;
+    det = 1.0 / det;
+    out[0]=(a11*b11-a12*b10+a13*b09)*det;
+    out[1]=(a02*b10-a01*b11-a03*b09)*det;
+    out[2]=(a31*b05-a32*b04+a33*b03)*det;
+    out[3]=(a22*b04-a21*b05-a23*b03)*det;
+    out[4]=(a12*b08-a10*b11-a13*b07)*det;
+    out[5]=(a00*b11-a02*b08+a03*b07)*det;
+    out[6]=(a32*b02-a30*b05-a33*b01)*det;
+    out[7]=(a20*b05-a22*b02+a23*b01)*det;
+    out[8]=(a10*b10-a11*b08+a13*b06)*det;
+    out[9]=(a01*b08-a00*b10-a03*b06)*det;
+    out[10]=(a30*b04-a31*b02+a33*b00)*det;
+    out[11]=(a21*b02-a20*b04-a23*b00)*det;
+    out[12]=(a11*b07-a10*b09-a12*b06)*det;
+    out[13]=(a00*b09-a01*b07+a02*b06)*det;
+    out[14]=(a31*b01-a30*b03-a32*b00)*det;
+    out[15]=(a20*b03-a21*b01+a22*b00)*det;
+    return out;
+  },
+  normalMat3: (out, m) => {
+    const a00=m[0],a01=m[1],a02=m[2],
+          a10=m[4],a11=m[5],a12=m[6],
+          a20=m[8],a21=m[9],a22=m[10];
+    const b01 = a22*a11 - a12*a21;
+    const b11 = -a22*a10 + a12*a20;
+    const b21 = a21*a10 - a11*a20;
+    let det = a00*b01 + a01*b11 + a02*b21;
+    if (Math.abs(det) < 1e-8) {
+      out[0]=1;out[1]=0;out[2]=0;out[3]=0;out[4]=1;out[5]=0;out[6]=0;out[7]=0;out[8]=1;
+      return out;
+    }
+    det = 1.0 / det;
+    out[0] = b01 * det;
+    out[1] = b11 * det;
+    out[2] = b21 * det;
+    out[3] = (-a22*a01 + a02*a21) * det;
+    out[4] = (a22*a00 - a02*a20) * det;
+    out[5] = (-a21*a00 + a01*a20) * det;
+    out[6] = (a12*a01 - a02*a11) * det;
+    out[7] = (-a12*a00 + a02*a10) * det;
+    out[8] = (a11*a00 - a01*a10) * det;
+    return out;
+  },
+  transformPoint: (m, x, y, z) => [
+    m[0]*x + m[4]*y + m[8]*z + m[12],
+    m[1]*x + m[5]*y + m[9]*z + m[13],
+    m[2]*x + m[6]*y + m[10]*z + m[14]
+  ]
+};
+
+// ============================================================================
+// 2. PROCEDURAL WEB AUDIO FOLEY ENGINE (ZERO EXTERNAL ASSETS)
+// ============================================================================
+class SoundEngine {
+  constructor() {
+    this.ctx = null;
+    this.noiseBuf = null;
+    this.master = null;
+    this.lastRustle = 0;
+    this.lastWheel = 0;
+  }
+  unlock() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.72;
+      this.master.connect(this.ctx.destination);
+      // Pre-generate 2s warm noise buffer
+      const sr = this.ctx.sampleRate;
+      const len = sr * 2;
+      this.noiseBuf = this.ctx.createBuffer(1, len, sr);
+      const data = this.noiseBuf.getChannelData(0);
+      let last = 0;
+      for (let i = 0; i < len; i++) {
+        const w = Math.random() * 2 - 1;
+        last = (last + 0.08 * w) / 1.08;
+        data[i] = w * 0.65 + last * 1.6;
+      }
+      this.startAmbience();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+  startAmbience() {
+    if (!this.ctx) return;
+    // Ultra-gentle twilight room air hum (barely audible cozy warmth)
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 260;
+    const g = this.ctx.createGain();
+    g.gain.value = 0.025;
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start();
+  }
+  playNoiseBurst(freq, q, dur, vol, hp = 0) {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const offset = Math.random() * 1.4;
+    const f = this.ctx.createBiquadFilter();
+    f.type = hp ? 'highpass' : 'bandpass';
+    f.frequency.setValueAtTime(freq, t);
+    f.Q.value = q;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + Math.min(0.012, dur * 0.25));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(t, offset, dur + 0.02);
+  }
+  playNibble() {
+    // Crisp tiny hamster crunch (カリッ)
+    const f = 2200 + Math.random() * 1300;
+    this.playNoiseBurst(f, 3.2, 0.045, 0.17);
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(880 + Math.random() * 420, t);
+    o.frequency.exponentialRampToValueAtTime(340, t + 0.032);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.055, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.036);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.04);
+  }
+  playStuffCheek(fillRatio) {
+    // Plush puff + tiny happy pop (ぷくっ)
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    const base = 240 + fillRatio * 130;
+    o.frequency.setValueAtTime(base, t);
+    o.frequency.exponentialRampToValueAtTime(base * 1.55, t + 0.085);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.11, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.12);
+    this.playNoiseBurst(1600, 1.5, 0.06, 0.06);
+  }
+  playCheekSquish(fillRatio) {
+    // Soft bouncy squish (ぷにっ)
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    const f0 = 210 + fillRatio * 80;
+    o.frequency.setValueAtTime(f0 * 1.3, t);
+    o.frequency.exponentialRampToValueAtTime(f0 * 0.78, t + 0.065);
+    o.frequency.exponentialRampToValueAtTime(f0 * 1.15, t + 0.15);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.14, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.17);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.18);
+  }
+  playSqueak(happy = true) {
+    // Delicate adorable hamster chirp
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    const f1 = happy ? 1180 + Math.random() * 240 : 940 + Math.random() * 140;
+    const f2 = happy ? f1 * 1.28 : f1 * 0.88;
+    o.frequency.setValueAtTime(f1, t);
+    o.frequency.exponentialRampToValueAtTime(f2, t + 0.09);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.06, t + 0.018);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.12);
+  }
+  playPurr() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    this.playNoiseBurst(900 + Math.random() * 350, 4.0, 0.032, 0.055);
+  }
+  playGrainClink(inBowl = false) {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    const f = inBowl ? (1850 + Math.random() * 950) : (680 + Math.random() * 320);
+    o.frequency.setValueAtTime(f, t);
+    o.frequency.exponentialRampToValueAtTime(f * 0.86, t + (inBowl ? 0.06 : 0.03));
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(inBowl ? 0.065 : 0.032, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + (inBowl ? 0.07 : 0.035));
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.08);
+  }
+  playWheatRustle(intensity = 1) {
+    const now = performance.now();
+    if (now - this.lastRustle < 55) return;
+    this.lastRustle = now;
+    this.playNoiseBurst(2600 + Math.random() * 1400, 1.4, 0.085, 0.09 * clamp(intensity, 0.3, 1.3));
+  }
+  playBeddingRustle(intensity = 1) {
+    const now = performance.now();
+    if (now - this.lastRustle < 65) return;
+    this.lastRustle = now;
+    this.playNoiseBurst(1350 + Math.random() * 600, 1.1, 0.095, 0.10 * clamp(intensity, 0.25, 1.3));
+  }
+  playWoodKnock() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    for (let k = 0; k < 2; k++) {
+      const dt = k * 0.105;
+      const o = this.ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(310 + k * 45, t + dt);
+      o.frequency.exponentialRampToValueAtTime(160, t + dt + 0.065);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t + dt);
+      g.gain.linearRampToValueAtTime(0.14, t + dt + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.075);
+      o.connect(g); g.connect(this.master);
+      o.start(t + dt); o.stop(t + dt + 0.08);
+    }
+  }
+  playLampClick(on) {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'square';
+    o.frequency.setValueAtTime(on ? 1400 : 950, t);
+    o.frequency.exponentialRampToValueAtTime(220, t + 0.022);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.09, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.026);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.03);
+    this.playNoiseBurst(3200, 2.0, 0.025, 0.08);
+  }
+  playWaterPlip() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(620 + Math.random() * 140, t);
+    o.frequency.exponentialRampToValueAtTime(1420 + Math.random() * 200, t + 0.075);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.09, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.1);
+  }
+  playWheelTick(speed) {
+    const now = performance.now();
+    const interval = clamp(240 / Math.max(1, Math.abs(speed)), 55, 240);
+    if (now - this.lastWheel < interval) return;
+    this.lastWheel = now;
+    this.playNoiseBurst(520 + Math.random() * 180, 2.2, 0.04, 0.045 * clamp(Math.abs(speed) * 0.25, 0.2, 1.0));
+  }
+  playBreezeChime() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const notes = [587.3, 739.9, 880.0, 1174.7];
+    for (let i = 0; i < 3; i++) {
+      const f = notes[Math.floor(Math.random() * notes.length)];
+      const dt = i * 0.11;
+      const o = this.ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(f, t + dt);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t + dt);
+      g.gain.linearRampToValueAtTime(0.032, t + dt + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.65);
+      o.connect(g); g.connect(this.master);
+      o.start(t + dt); o.stop(t + dt + 0.7);
+    }
+    this.playNoiseBurst(700, 0.8, 0.45, 0.04);
+  }
+}
+const sfx = new SoundEngine();
+
+// ============================================================================
+// 3. WEBGL2 CONTEXT & SHADERS
+// ============================================================================
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {
+  antialias: true,
+  alpha: false,
+  powerPreference: 'high-performance'
+});
+if (!gl) {
+  throw new Error('WebGL2 unavailable');
+}
+
+function compileShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(sh);
+    console.error(log, src);
+    throw new Error('Shader compile failed: ' + log);
+  }
+  return sh;
+}
+function createProgram(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
+  const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(p);
+    console.error(log);
+    throw new Error('Program link failed: ' + log);
+  }
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  const u = {};
+  const count = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < count; i++) {
+    const info = gl.getActiveUniform(p, i);
+    u[info.name] = gl.getUniformLocation(p, info.name);
+  }
+  return { prog: p, u };
+}
+
+// --- Shadow Map Program (Regular & Instanced) ---
+function makeShadowProgram(instanced) {
+  const vs = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+${instanced ? 'layout(location=4) in vec4 aM0; layout(location=5) in vec4 aM1; layout(location=6) in vec4 aM2; layout(location=7) in vec4 aM3;' : ''}
+uniform mat4 uLightVP;
+${instanced ? '' : 'uniform mat4 uModel;'}
+void main() {
+  mat4 M = ${instanced ? 'mat4(aM0, aM1, aM2, aM3)' : 'uModel'};
+  gl_Position = uLightVP * M * vec4(aPos, 1.0);
+}`;
+  const fs = `#version 300 es
+precision highp float;
+void main() {}`;
+  return createProgram(vs, fs);
+}
+const shadowProg = makeShadowProgram(false);
+const shadowInstProg = makeShadowProgram(true);
+
+// --- Photorealistic PBR + Fur + Subsurface + Soft PCF Shadow Program ---
+function makePBRProgram(instanced) {
+  const vs = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNorm;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec4 aColor;
+${instanced ? `
+layout(location=4) in vec4 aM0;
+layout(location=5) in vec4 aM1;
+layout(location=6) in vec4 aM2;
+layout(location=7) in vec4 aM3;
+layout(location=8) in vec4 aInstTint;
+` : ''}
+uniform mat4 uVP;
+uniform mat4 uLightVP;
+${instanced ? '' : 'uniform mat4 uModel; uniform mat3 uNormalMat;'}
+out vec3 vWorldPos;
+out vec3 vWorldNorm;
+out vec2 vUV;
+out vec4 vColor;
+out vec4 vShadowCoord;
+void main() {
+  mat4 M = ${instanced ? 'mat4(aM0, aM1, aM2, aM3)' : 'uModel'};
+  vec4 wp = M * vec4(aPos, 1.0);
+  vWorldPos = wp.xyz;
+  ${instanced ? 'vWorldNorm = normalize(mat3(M) * aNorm);' : 'vWorldNorm = normalize(uNormalMat * aNorm);'}
+  vUV = aUV;
+  vColor = aColor ${instanced ? '* aInstTint' : ''};
+  vShadowCoord = uLightVP * wp;
+  gl_Position = uVP * wp;
+}`;
+
+  const fs = `#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in vec3 vWorldNorm;
+in vec2 vUV;
+in vec4 vColor;
+in vec4 vShadowCoord;
+
+uniform sampler2D uAlbedoTex;
+uniform sampler2D uNormalTex;
+uniform sampler2D uShadowTex;
+
+uniform vec4 uBaseColor;
+uniform vec2 uTexScale;
+uniform float uRoughness;
+uniform float uMetallic;
+uniform float uFurAmount;
+uniform float uClearcoat;
+uniform float uNormalStrength;
+uniform vec3 uSubsurface;
+uniform vec3 uEmissive;
+
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uRimDir;
+uniform vec3 uRimColor;
+uniform vec3 uSkyColor;
+uniform vec3 uGroundColor;
+uniform vec3 uLampPos;
+uniform vec3 uLampColor;
+uniform vec3 uHamsterPos;
+uniform float uShadowTexel;
+
+out vec4 outColor;
+
+// Screen-space cotangent frame for normal mapping without needing precomputed tangents
+mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
+  vec3 dp1 = dFdx(p);
+  vec3 dp2 = dFdy(p);
+  vec2 duv1 = dFdx(uv);
+  vec2 duv2 = dFdy(uv);
+  vec3 dp2perp = cross(dp2, N);
+  vec3 dp1perp = cross(N, dp1);
+  vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+  vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+  float invmax = inversesqrt(max(dot(T, T), dot(B, B)) + 1e-8);
+  return mat3(T * invmax, B * invmax, N);
+}
+
+float calcShadow(vec4 sc, float NdotL) {
+  vec3 proj = sc.xyz / sc.w;
+  proj = proj * 0.5 + 0.5;
+  if (proj.x < 0.002 || proj.x > 0.998 || proj.y < 0.002 || proj.y > 0.998 || proj.z > 0.999) {
+    return 1.0;
+  }
+  float bias = max(0.0012, 0.0038 * (1.0 - NdotL));
+  float shadow = 0.0;
+  const vec2 poisson[9] = vec2[9](
+    vec2(0.0, 0.0),
+    vec2(-0.75, -0.45), vec2(0.72, -0.48),
+    vec2(-0.42, 0.78),  vec2(0.45, 0.76),
+    vec2(-1.15, 0.12),  vec2(1.12, -0.08),
+    vec2(0.05, -1.12),  vec2(-0.08, 1.15)
+  );
+  float spread = uShadowTexel * 1.65;
+  for (int i = 0; i < 9; i++) {
+    float d = texture(uShadowTex, proj.xy + poisson[i] * spread).r;
+    shadow += (proj.z - bias <= d) ? 1.0 : 0.0;
+  }
+  return shadow / 9.0;
+}
+
+float D_GGX(float NdotH, float a2) {
+  float d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+  return a2 / (3.14159265 * d * d + 1e-6);
+}
+float G_Schlick(float NdotV, float NdotL, float r) {
+  float k = (r + 1.0) * (r + 1.0) * 0.125;
+  float gv = NdotV / (NdotV * (1.0 - k) + k + 1e-5);
+  float gl = NdotL / (NdotL * (1.0 - k) + k + 1e-5);
+  return gv * gl;
+}
+
+vec3 evalLight(vec3 N, vec3 V, vec3 L, vec3 lightCol, vec3 albedo, float rough, float metal, float fur, float coat, vec3 sss) {
+  vec3 H = normalize(L + V);
+  float NdotL = max(dot(N, L), 0.0);
+  float NdotV = max(dot(N, V), 0.001);
+  float NdotH = max(dot(N, H), 0.0);
+  float VdotH = max(dot(V, H), 0.0);
+
+  // Soft wrapped diffuse for plush fur & organic warmth
+  float wrap = fur * 0.42 + (length(sss) > 0.01 ? 0.25 : 0.0);
+  float diffTerm = max((dot(N, L) + wrap) / ((1.0 + wrap) * (1.0 + wrap)), 0.0);
+
+  vec3 F0 = mix(vec3(0.04), albedo, metal);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+
+  float a = max(0.045, rough * rough);
+  float a2 = a * a;
+  float D = D_GGX(NdotH, a2);
+  float G = G_Schlick(NdotV, max(NdotL, 0.001), rough);
+  vec3 spec = (D * G * F) / (4.0 * NdotV * max(NdotL, 0.001) + 0.001);
+
+  vec3 kD = (1.0 - F) * (1.0 - metal);
+  vec3 col = (kD * albedo / 3.14159265) * diffTerm * lightCol + spec * NdotL * lightCol;
+
+  // Clearcoat (glossy ceramic glaze, wet eyes, crystal glass)
+  if (coat > 0.01) {
+    float ca2 = 0.0035;
+    float cD = D_GGX(NdotH, ca2);
+    float cF = 0.04 + 0.96 * pow(1.0 - VdotH, 5.0);
+    col += vec3(cD * cF * coat * 0.22) * NdotL * lightCol;
+  }
+
+  // Velvet fur sheen (grazing sunlit fuzz halo)
+  if (fur > 0.01) {
+    float rim = pow(1.0 - NdotV, 2.3);
+    float backWrap = clamp(dot(N, L) * 0.5 + 0.65, 0.0, 1.0);
+    vec3 sheenCol = mix(albedo, vec3(1.0, 0.92, 0.78), 0.45);
+    col += sheenCol * rim * backWrap * fur * 0.42 * lightCol;
+  }
+
+  // Subsurface scattering (translucent pink hamster ears, warm linen shade)
+  if (dot(sss, sss) > 0.0001) {
+    float trans = pow(clamp(dot(V, -L) * 0.5 + 0.5, 0.0, 1.0), 2.0) * 0.65 + 0.35 * clamp(-dot(N, L) + 0.4, 0.0, 1.0);
+    col += sss * albedo * trans * lightCol * 0.85;
+  }
+  return col;
+}
+
+vec3 acesToneMap(vec3 x) {
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+  vec2 uv = vUV * uTexScale;
+  vec4 texCol = texture(uAlbedoTex, uv);
+  vec3 albedo = pow(texCol.rgb, vec3(2.2)) * pow(uBaseColor.rgb * vColor.rgb, vec3(2.2));
+  float alpha = texCol.a * uBaseColor.a * vColor.a;
+
+  vec3 N = normalize(vWorldNorm) * (gl_FrontFacing ? 1.0 : -1.0);
+  if (uNormalStrength > 0.001) {
+    vec3 nMap = texture(uNormalTex, uv).rgb * 2.0 - 1.0;
+    nMap.xy *= uNormalStrength;
+    mat3 TBN = cotangentFrame(N, vWorldPos, uv);
+    N = normalize(TBN * normalize(nMap));
+  }
+  vec3 V = normalize(uCamPos - vWorldPos);
+
+  // Soft contact AO under hamster on bedding
+  float contactAO = 1.0;
+  if (vWorldPos.y < 0.24 && uFurAmount < 0.05) {
+    vec2 hd = vWorldPos.xz - uHamsterPos.xz;
+    float hDist = dot(hd, hd);
+    contactAO = mix(0.56, 1.0, smoothstep(0.015, 0.24, hDist));
+  }
+
+  // 1. Directional golden-hour sun key light with soft PCF shadows
+  vec3 Lsun = normalize(uSunDir);
+  float sh = calcShadow(vShadowCoord, max(dot(N, Lsun), 0.0));
+  // Keep shadows softly lifted by warm bounce (never harsh black)
+  float shSoft = mix(0.24, 1.0, sh);
+  vec3 color = evalLight(N, V, Lsun, uSunColor, albedo, uRoughness, uMetallic, uFurAmount, uClearcoat, uSubsurface) * shSoft;
+
+  // 2. Back twilight window rim light (makes hamster ears & wheat awns glow!)
+  vec3 Lrim = normalize(uRimDir);
+  color += evalLight(N, V, Lrim, uRimColor, albedo, uRoughness, uMetallic, uFurAmount, uClearcoat, uSubsurface);
+
+  // 3. Warm bedside lamp point light
+  vec3 toLamp = uLampPos - vWorldPos;
+  float lampDist = length(toLamp);
+  vec3 Llamp = toLamp / max(lampDist, 0.001);
+  float atten = 1.0 / (1.0 + 0.14 * lampDist * lampDist);
+  color += evalLight(N, V, Llamp, uLampColor * atten, albedo, uRoughness, uMetallic, uFurAmount, uClearcoat, uSubsurface);
+
+  // 4. Hemisphere ambient (cool twilight sky zenith + warm birch bounce ground)
+  float hemi = N.y * 0.5 + 0.5;
+  vec3 ambLight = mix(uGroundColor, uSkyColor, hemi);
+  color += albedo * ambLight * contactAO * (1.0 - uMetallic * 0.65);
+
+  // Subtle specular environment reflection for glossy surfaces (eyes, ceramic, glass)
+  if (uClearcoat > 0.2 || uRoughness < 0.25) {
+    vec3 R = reflect(-V, N);
+    float envUp = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 envCol = mix(uGroundColor * 0.9, uSkyColor * 1.4 + uSunColor * 0.35, envUp);
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0);
+    color += envCol * fres * (0.35 * uClearcoat + 0.25 * (1.0 - uRoughness));
+    // Crisp dual studio/window catchlight for hamster eyes (high clearcoat + dark albedo)
+    if (uClearcoat > 0.85) {
+      float c1 = pow(max(dot(R, normalize(vec3(-0.32, 0.68, 0.66))), 0.0), 90.0);
+      float c2 = pow(max(dot(R, normalize(vec3(0.45, 0.35, 0.82))), 0.0), 140.0);
+      color += vec3(1.4, 1.32, 1.18) * c1 + vec3(1.1, 0.95, 0.8) * c2 * 0.7;
+    }
+  }
+
+  // Emissive (lamp shade warm glow, etc.)
+  color += uEmissive;
+
+  // ACES Filmic tone mapping + gentle warm twilight polish + gamma
+  color = acesToneMap(color * 1.08);
+  color = pow(color, vec3(1.0 / 2.2));
+  outColor = vec4(color, alpha);
+}`;
+  return createProgram(vs, fs);
+}
+const pbrProg = makePBRProgram(false);
+const pbrInstProg = makePBRProgram(true);
+
+// --- Twilight Window Sky Backdrop Shader ---
+const skyProg = createProgram(`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUV;
+uniform mat4 uVP;
+uniform mat4 uModel;
+out vec2 vUV;
+void main() {
+  vUV = aUV;
+  gl_Position = uVP * uModel * vec4(aPos, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform float uTime;
+uniform float uDusk; // 0 = golden afternoon, 0.45 = coral sunset, 0.85 = starry twilight
+uniform vec3 uSkyZenith;
+uniform vec3 uSkyMid;
+uniform vec3 uSkyHorizon;
+out vec4 outColor;
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1,0)), f.x),
+             mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), f.x), f.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) {
+    v += a * noise(p);
+    p *= 2.03;
+    a *= 0.5;
+  }
+  return v;
+}
+
+void main() {
+  vec2 uv = vUV;
+  // Vertical sky gradient
+  vec3 col = mix(uSkyHorizon, uSkyMid, smoothstep(0.0, 0.48, uv.y));
+  col = mix(col, uSkyZenith, smoothstep(0.38, 0.96, uv.y));
+
+  // Warm setting sun orb & atmospheric scatter
+  vec2 sunPos = vec2(0.34, mix(0.56, 0.06, clamp(uDusk * 1.25, 0.0, 1.0)));
+  vec2 aspectUV = vec2((uv.x - sunPos.x) * 1.45, uv.y - sunPos.y);
+  float sunD = length(aspectUV);
+  float sunVis = smoothstep(0.88, 0.42, uDusk);
+  col += vec3(1.0, 0.62, 0.30) * exp(-sunD * 3.2) * 0.72 * sunVis;
+  col += vec3(1.0, 0.92, 0.75) * smoothstep(0.095, 0.035, sunD) * 1.15 * sunVis;
+
+  // Soft pastel drifting clouds lit from underneath
+  float c1 = fbm(vec2(uv.x * 3.8 + uTime * 0.012, uv.y * 5.2 + 1.3));
+  float c2 = fbm(vec2(uv.x * 6.2 - uTime * 0.008, uv.y * 8.0 + 4.1));
+  float cloudMask = smoothstep(0.46, 0.78, c1 * 0.72 + c2 * 0.32) * smoothstep(0.12, 0.35, uv.y) * smoothstep(0.95, 0.62, uv.y);
+  vec3 cloudLit = mix(vec3(1.0, 0.80, 0.60), vec3(0.75, 0.52, 0.66), uDusk);
+  vec3 cloudShad = mix(vec3(0.88, 0.58, 0.50), vec3(0.24, 0.20, 0.36), uDusk);
+  col = mix(col, mix(cloudShad, cloudLit, smoothstep(0.4, 0.8, c1)), cloudMask * 0.62);
+
+  // Twinkling twilight stars & delicate crescent moon
+  float starVis = smoothstep(0.48, 0.85, uDusk);
+  if (starVis > 0.01) {
+    vec2 sg = uv * vec2(48.0, 32.0);
+    vec2 si = floor(sg);
+    vec2 sf = fract(sg) - 0.5;
+    float h = hash(si);
+    if (h > 0.91 && uv.y > 0.35) {
+      float tw = 0.6 + 0.4 * sin(uTime * (2.0 + h * 5.0) + h * 60.0);
+      float st = smoothstep(0.22, 0.02, length(sf)) * tw;
+      col += vec3(1.0, 0.96, 0.84) * st * starVis * 0.95;
+    }
+    // Delicate crescent moon top-right
+    vec2 mp = vec2((uv.x - 0.76) * 1.45, uv.y - 0.76);
+    float m1 = smoothstep(0.068, 0.056, length(mp));
+    float m2 = smoothstep(0.064, 0.052, length(mp - vec2(0.028, 0.018)));
+    float moon = clamp(m1 - m2, 0.0, 1.0);
+    col += vec3(1.0, 0.95, 0.78) * moon * starVis * 1.2;
+    col += vec3(0.85, 0.88, 1.0) * exp(-length(mp) * 9.0) * 0.25 * starVis;
+  }
+
+  // Gentle swaying distant garden tree silhouettes at lower window edge
+  float sway = sin(uTime * 0.85 + uv.x * 5.0) * 0.012;
+  float treeH = 0.16 + 0.09 * sin(uv.x * 9.0 + 0.6) + 0.07 * fbm(vec2(uv.x * 11.0 + sway * 6.0, 2.0));
+  float treeMask = smoothstep(treeH + 0.015, treeH - 0.015, uv.y);
+  vec3 treeCol = mix(vec3(0.28, 0.20, 0.22), vec3(0.08, 0.08, 0.14), uDusk);
+  col = mix(col, treeCol, treeMask * 0.92);
+
+  // Subtle ACES + gamma
+  col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
+  outColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+}`);
+
+// --- Shimmering Rippling Water Dish Shader ---
+const waterProg = createProgram(`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUV;
+uniform mat4 uVP;
+uniform mat4 uModel;
+out vec2 vUV;
+out vec3 vWorldPos;
+void main() {
+  vUV = aUV;
+  vec4 wp = uModel * vec4(aPos, 1.0);
+  vWorldPos = wp.xyz;
+  gl_Position = uVP * wp;
+}`, `#version 300 es
+precision highp float;
+in vec2 vUV;
+in vec3 vWorldPos;
+uniform float uTime;
+uniform float uRippleAge;
+uniform vec3 uCamPos;
+uniform vec3 uSunColor;
+uniform vec3 uSkyColor;
+out vec4 outColor;
+void main() {
+  vec2 p = (vUV - 0.5) * 2.0;
+  float r = length(p);
+  if (r > 1.0) discard;
+  float wave = sin(r * 18.0 - uRippleAge * 11.0) * exp(-uRippleAge * 2.1) * exp(-r * 1.4) * 0.14;
+  float micro = sin(p.x * 9.0 + uTime * 2.2) * cos(p.y * 9.0 - uTime * 1.8) * 0.025;
+  vec3 N = normalize(vec3(p.x * wave * 4.0 + micro, 1.0, p.y * wave * 4.0 + micro));
+  vec3 V = normalize(uCamPos - vWorldPos);
+  float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+  vec3 L = normalize(vec3(-0.55, 0.72, 0.30));
+  float spec = pow(max(dot(reflect(-L, N), V), 0.0), 64.0);
+  vec3 base = mix(vec3(0.45, 0.64, 0.70), uSkyColor * 1.35 + uSunColor * 0.3, 0.45 + fres * 0.45);
+  vec3 col = base + uSunColor * spec * 1.3 + vec3(0.9, 0.95, 1.0) * abs(wave) * 1.2;
+  outColor = vec4(clamp(col, 0.0, 1.0), 0.76 + fres * 0.2);
+}`);
+
+// --- Additive Volumetric Sunbeams & Soft Glow Particles Shader ---
+const fxProg = createProgram(`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUV;
+uniform mat4 uVP;
+uniform mat4 uModel;
+out vec2 vUV;
+void main() {
+  vUV = aUV;
+  gl_Position = uVP * uModel * vec4(aPos, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform vec4 uColor;
+uniform int uMode; // 0 = sunbeam shaft, 1 = soft radial glow/sparkle
+out vec4 outColor;
+void main() {
+  float a = 0.0;
+  if (uMode == 0) {
+    float edgeX = sin(vUV.x * 3.14159265);
+    edgeX = edgeX * edgeX;
+    float fadeY = smoothstep(0.0, 0.28, vUV.y) * smoothstep(1.0, 0.15, vUV.y);
+    a = edgeX * fadeY;
+  } else {
+    float d = length((vUV - 0.5) * 2.0);
+    a = exp(-d * d * 3.6) * smoothstep(1.0, 0.15, d);
+  }
+  outColor = vec4(uColor.rgb, uColor.a * a);
+}`);
+
+// ============================================================================
+// 4. PROCEDURAL PBR TEXTURE SYNTHESIZER (ALBEDO + NORMAL MAPS)
+// ============================================================================
+function uploadTexture(canvasEl, srgb = false) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvasEl);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  return tex;
+}
+
+function heightCanvasToNormalTex(srcCanvas, strength = 2.0) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const ctx = srcCanvas.getContext('2d');
+  const src = ctx.getImageData(0, 0, w, h).data;
+  const outC = document.createElement('canvas');
+  outC.width = w; outC.height = h;
+  const octx = outC.getContext('2d');
+  const img = octx.createImageData(w, h);
+  const dst = img.data;
+  const getH = (x, y) => {
+    const xi = ((x % w) + w) % w;
+    const yi = ((y % h) + h) % h;
+    const idx = (yi * w + xi) * 4;
+    return (src[idx] * 0.3 + src[idx+1] * 0.59 + src[idx+2] * 0.11) / 255;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dx = (getH(x + 1, y) - getH(x - 1, y)) * strength;
+      const dy = (getH(x, y + 1) - getH(x, y - 1)) * strength;
+      let nx = -dx, ny = -dy, nz = 1.0;
+      const inv = 1 / Math.hypot(nx, ny, nz);
+      nx *= inv; ny *= inv; nz *= inv;
+      const idx = (y * w + x) * 4;
+      dst[idx]   = Math.round((nx * 0.5 + 0.5) * 255);
+      dst[idx+1] = Math.round((ny * 0.5 + 0.5) * 255);
+      dst[idx+2] = Math.round((nz * 0.5 + 0.5) * 255);
+      dst[idx+3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  return uploadTexture(outC);
+}
+
+function makeFlatTex(r, g, b, a = 255) {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 4;
+  const x = c.getContext('2d');
+  x.fillStyle = `rgba(${r},${g},${b},${a/255})`;
+  x.fillRect(0, 0, 4, 4);
+  return uploadTexture(c);
+}
+
+function buildTextures() {
+  const T = {};
+  T.white = makeFlatTex(255, 255, 255);
+  T.flatNorm = makeFlatTex(128, 128, 255);
+
+  // 1. Golden Hamster Fur (body coat with warm golden top, creamy white belly, subtle strand texture)
+  {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    // Vertical v: 0 = top back, 0.5 = sides, 1.0 = creamy belly
+    const grad = ctx.createLinearGradient(0, 0, 0, 512);
+    grad.addColorStop(0.00, '#c67a34');
+    grad.addColorStop(0.28, '#d99148');
+    grad.addColorStop(0.54, '#e5aa67');
+    grad.addColorStop(0.70, '#f4dec0');
+    grad.addColorStop(1.00, '#faf1e4');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Subtle rich warm cinnamon patch along upper back
+    const backG = ctx.createRadialGradient(256, 85, 20, 256, 110, 230);
+    backG.addColorStop(0, 'rgba(164, 88, 28, 0.34)');
+    backG.addColorStop(1, 'rgba(164, 88, 28, 0.0)');
+    ctx.fillStyle = backG;
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Thousands of soft fine directional fur hairs
+    const pr = mulberry32(101);
+    for (let i = 0; i < 6500; i++) {
+      const x = pr() * 512;
+      const y = pr() * 512;
+      const len = 7 + pr() * 14;
+      const isBelly = y > 335;
+      const light = pr() > 0.45;
+      if (isBelly) {
+        ctx.strokeStyle = light ? 'rgba(255,250,242,0.38)' : 'rgba(225,198,166,0.32)';
+      } else {
+        ctx.strokeStyle = light ? 'rgba(252,216,158,0.34)' : 'rgba(148,82,30,0.28)';
+      }
+      ctx.lineWidth = 1.1 + pr() * 1.1;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (pr() - 0.5) * 3.5, y + len);
+      ctx.stroke();
+    }
+    T.fur = uploadTexture(c);
+    T.furNorm = heightCanvasToNormalTex(c, 2.4);
+  }
+
+  // 2. Hamster Cheek / Head Fur (creamy golden blend with subtle Syrian cheek flash!)
+  {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, 512);
+    grad.addColorStop(0.00, '#ce823a');
+    grad.addColorStop(0.38, '#df9a50');
+    grad.addColorStop(0.62, '#f2cfa0');
+    grad.addColorStop(0.82, '#faf0e0');
+    grad.addColorStop(1.00, '#fff8ee');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Soft classic Syrian hamster dark-warm cheek flash markings on sides
+    for (const cx of [128, 384]) {
+      const g = ctx.createRadialGradient(cx, 250, 8, cx, 255, 62);
+      g.addColorStop(0, 'rgba(112, 62, 26, 0.34)');
+      g.addColorStop(1, 'rgba(112, 62, 26, 0.0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 512, 512);
+    }
+    const pr = mulberry32(202);
+    for (let i = 0; i < 5200; i++) {
+      const x = pr() * 512;
+      const y = pr() * 512;
+      const len = 6 + pr() * 11;
+      ctx.strokeStyle = pr() > 0.5 ? 'rgba(255,232,190,0.34)' : 'rgba(155,90,38,0.22)';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (pr() - 0.5) * 4, y + len);
+      ctx.stroke();
+    }
+    T.headFur = uploadTexture(c);
+    T.headFurNorm = heightCanvasToNormalTex(c, 2.0);
+  }
+
+  // 3. Natural Birch Wood (for house, wheel, bridge, enclosure trim)
+  {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#dfc39d';
+    ctx.fillRect(0, 0, 512, 512);
+    const pr = mulberry32(303);
+    for (let y = 0; y < 512; y += 2) {
+      const wave = Math.sin(y * 0.045) * 14 + Math.sin(y * 0.13) * 5;
+      const v = Math.floor(205 + Math.sin((y + wave) * 0.22) * 16 + (pr() - 0.5) * 10);
+      ctx.fillStyle = `rgb(${clamp(v+16,0,255)}, ${clamp(v-8,0,255)}, ${clamp(v-42,0,255)})`;
+      ctx.fillRect(0, y, 512, 2);
+    }
+    for (let i = 0; i < 240; i++) {
+      ctx.strokeStyle = pr() > 0.5 ? 'rgba(155,112,68,0.16)' : 'rgba(255,244,224,0.16)';
+      ctx.lineWidth = 1 + pr() * 2;
+      const y = pr() * 512;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.bezierCurveTo(170, y + (pr()-0.5)*14, 340, y + (pr()-0.5)*14, 512, y);
+      ctx.stroke();
+    }
+    T.birch = uploadTexture(c);
+    T.birchNorm = heightCanvasToNormalTex(c, 1.5);
+  }
+
+  // 4. Warm Walnut Desk Wood
+  {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#7e5538';
+    ctx.fillRect(0, 0, 512, 512);
+    const pr = mulberry32(404);
+    for (let y = 0; y < 512; y += 2) {
+      const w = Math.sin(y * 0.06) * 12;
+      const d = Math.sin((y + w) * 0.26) * 14 + (pr() - 0.5) * 8;
+      ctx.fillStyle = `rgb(${clamp(Math.floor(124+d),0,255)},${clamp(Math.floor(83+d*0.75),0,255)},${clamp(Math.floor(55+d*0.5),0,255)})`;
+      ctx.fillRect(0, y, 512, 2);
+    }
+    // Subtle plank seams
+    ctx.fillStyle = 'rgba(42,22,12,0.35)';
+    ctx.fillRect(0, 170, 512, 2);
+    ctx.fillRect(0, 342, 512, 2);
+    T.walnut = uploadTexture(c);
+    T.walnutNorm = heightCanvasToNormalTex(c, 1.7);
+  }
+
+  // 5. Aspen Wood Shavings Bedding Ground
+  {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#e7d0a8';
+    ctx.fillRect(0, 0, 512, 512);
+    const pr = mulberry32(505);
+    const cols = ['#f3e2c2', '#e8cfa4', '#d8b786', '#f7ebd2', '#cfa974', '#ebd6b0'];
+    for (let i = 0; i < 1600; i++) {
+      const x = pr() * 512, y = pr() * 512;
+      const rw = 8 + pr() * 18, rh = 4 + pr() * 9;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(pr() * TAU);
+      ctx.fillStyle = cols[Math.floor(pr() * cols.length)];
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rw, rh, 0, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(138,100,56,0.22)';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      ctx.restore();
+    }
+    T.bedding = uploadTexture(c);
+    T.beddingNorm = heightCanvasToNormalTex(c, 2.8);
+  }
+
+  // 6. Handmade Speckled Ceramic
+  {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, '#f8efe6');
+    g.addColorStop(0.75, '#f2ded2');
+    g.addColorStop(1, '#d8b29c');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 256, 256);
+    const pr = mulberry32(606);
+    for (let i = 0; i < 380; i++) {
+      ctx.fillStyle = pr() > 0.35 ? 'rgba(130,92,68,0.28)' : 'rgba(210,145,120,0.22)';
+      ctx.beginPath();
+      ctx.arc(pr() * 256, pr() * 256, 0.8 + pr() * 1.8, 0, TAU);
+      ctx.fill();
+    }
+    T.ceramic = uploadTexture(c);
+    T.ceramicNorm = heightCanvasToNormalTex(c, 0.7);
+  }
+
+  // 7. Natural Cork (wheel running track)
+  {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#c49664';
+    ctx.fillRect(0, 0, 256, 256);
+    const pr = mulberry32(707);
+    for (let i = 0; i < 1200; i++) {
+      const shade = 140 + Math.floor(pr() * 75);
+      ctx.fillStyle = `rgb(${shade+18},${Math.floor(shade*0.78)},${Math.floor(shade*0.52)})`;
+      ctx.fillRect(pr() * 256, pr() * 256, 3 + pr() * 7, 2 + pr() * 5);
+    }
+    T.cork = uploadTexture(c);
+    T.corkNorm = heightCanvasToNormalTex(c, 2.2);
+  }
+
+  // 8. Golden Wheat Husk
+  {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, '#f5d784');
+    g.addColorStop(0.5, '#e2b250');
+    g.addColorStop(1, '#c68d32');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 256, 256);
+    const pr = mulberry32(808);
+    for (let x = 0; x < 256; x += 3) {
+      ctx.strokeStyle = pr() > 0.5 ? 'rgba(255,244,195,0.32)' : 'rgba(148,96,24,0.25)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x, 0); ctx.lineTo(x, 256); ctx.stroke();
+    }
+    T.wheat = uploadTexture(c);
+    T.wheatNorm = heightCanvasToNormalTex(c, 1.8);
+  }
+
+  // 9. Woven Rattan Basket
+  {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#9c6e42';
+    ctx.fillRect(0, 0, 256, 256);
+    const step = 16;
+    for (let y = 0; y < 256; y += step) {
+      for (let x = 0; x < 256; x += step) {
+        const odd = ((x / step) + (y / step)) & 1;
+        const g = odd
+          ? ctx.createLinearGradient(x, y, x + step, y)
+          : ctx.createLinearGradient(x, y, x, y + step);
+        g.addColorStop(0, '#855830');
+        g.addColorStop(0.5, '#d2a26c');
+        g.addColorStop(1, '#7a4f2a');
+        ctx.fillStyle = g;
+        ctx.fillRect(x + 1, y + 1, step - 2, step - 2);
+      }
+    }
+    T.basket = uploadTexture(c);
+    T.basketNorm = heightCanvasToNormalTex(c, 3.0);
+  }
+
+  // 10. Striped Sunflower Seed Shell
+  {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#363230';
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.fillStyle = '#ece4d4';
+    for (let x = 8; x < 128; x += 18) {
+      ctx.fillRect(x, 0, 6, 128);
+    }
+    T.sunflower = uploadTexture(c);
+  }
+
+  // 11. Warm Linen Fabric (lamp shade & curtains)
+  {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#f6ead9';
+    ctx.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 256; i += 4) {
+      ctx.fillStyle = i % 8 === 0 ? 'rgba(190,160,128,0.16)' : 'rgba(255,255,255,0.16)';
+      ctx.fillRect(0, i, 256, 2);
+      ctx.fillRect(i, 0, 2, 256);
+    }
+    T.linen = uploadTexture(c);
+    T.linenNorm = heightCanvasToNormalTex(c, 1.3);
+  }
+
+  // 12. Cozy Plaster Bedroom Wall
+  {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#e5cfc0';
+    ctx.fillRect(0, 0, 256, 256);
+    const pr = mulberry32(909);
+    for (let i = 0; i < 900; i++) {
+      ctx.fillStyle = pr() > 0.5 ? 'rgba(255,244,234,0.14)' : 'rgba(175,140,118,0.12)';
+      ctx.beginPath();
+      ctx.arc(pr() * 256, pr() * 256, 3 + pr() * 14, 0, TAU);
+      ctx.fill();
+    }
+    T.wall = uploadTexture(c);
+    T.wallNorm = heightCanvasToNormalTex(c, 0.8);
+  }
+
+  return T;
+}
+const TEX = buildTextures();
+
+// ============================================================================
+// 5. PROCEDURAL 3D GEOMETRY LIBRARY
+// ============================================================================
+// Vertex layout: pos(3), norm(3), uv(2), color(4) = 12 floats
+function buildMesh(verts, indices) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+  const stride = 12 * 4;
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 24);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, stride, 32);
+
+  const ebo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+  const idxArr = verts.length / 12 > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idxArr, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  return {
+    vao, vbo, ebo,
+    count: indices.length,
+    idxType: idxArr instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT
+  };
+}
+
+function createInstancedMesh(baseMesh, maxInstances) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, baseMesh.vbo);
+  const stride = 12 * 4;
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 24);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, stride, 32);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, baseMesh.ebo);
+
+  // Per-instance buffer: mat4 (16 floats) + tint vec4 (4 floats) = 20 floats
+  const instData = new Float32Array(maxInstances * 20);
+  const instBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, instData.byteLength, gl.DYNAMIC_DRAW);
+  const istride = 20 * 4;
+  for (let i = 0; i < 4; i++) {
+    gl.enableVertexAttribArray(4 + i);
+    gl.vertexAttribPointer(4 + i, 4, gl.FLOAT, false, istride, i * 16);
+    gl.vertexAttribDivisor(4 + i, 1);
+  }
+  gl.enableVertexAttribArray(8);
+  gl.vertexAttribPointer(8, 4, gl.FLOAT, false, istride, 64);
+  gl.vertexAttribDivisor(8, 1);
+  gl.bindVertexArray(null);
+  return {
+    vao, instBuf, instData, maxInstances,
+    count: baseMesh.count, idxType: baseMesh.idxType, active: 0
+  };
+}
+
+function computeSmoothNormals(verts, indices) {
+  const n = verts.length / 12;
+  for (let i = 0; i < n; i++) {
+    verts[i*12+3] = 0; verts[i*12+4] = 0; verts[i*12+5] = 0;
+  }
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i]*12, b = indices[i+1]*12, c = indices[i+2]*12;
+    const e1x = verts[b]-verts[a], e1y = verts[b+1]-verts[a+1], e1z = verts[b+2]-verts[a+2];
+    const e2x = verts[c]-verts[a], e2y = verts[c+1]-verts[a+1], e2z = verts[c+2]-verts[a+2];
+    const nx = e1y*e2z - e1z*e2y, ny = e1z*e2x - e1x*e2z, nz = e1x*e2y - e1y*e2x;
+    verts[a+3]+=nx; verts[a+4]+=ny; verts[a+5]+=nz;
+    verts[b+3]+=nx; verts[b+4]+=ny; verts[b+5]+=nz;
+    verts[c+3]+=nx; verts[c+4]+=ny; verts[c+5]+=nz;
+  }
+  for (let i = 0; i < n; i++) {
+    const k = i*12+3;
+    const l = Math.hypot(verts[k], verts[k+1], verts[k+2]) || 1;
+    verts[k]/=l; verts[k+1]/=l; verts[k+2]/=l;
+  }
+}
+
+function createParametricSphere(segU, segV, deformFn) {
+  const verts = [], idx = [];
+  for (let iv = 0; iv <= segV; iv++) {
+    const v = iv / segV;
+    const phi = v * PI;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let iu = 0; iu <= segU; iu++) {
+      const u = iu / segU;
+      const theta = u * TAU;
+      let x = sp * Math.sin(theta);
+      let y = cp;
+      let z = sp * Math.cos(theta);
+      let r = 1, g = 1, b = 1;
+      if (deformFn) {
+        const res = deformFn(x, y, z, u, v);
+        x = res[0]; y = res[1]; z = res[2];
+        if (res.length > 3) { r = res[3]; g = res[4]; b = res[5]; }
+      }
+      verts.push(x, y, z, 0, 1, 0, u, v, r, g, b, 1);
+    }
+  }
+  const row = segU + 1;
+  for (let iv = 0; iv < segV; iv++) {
+    for (let iu = 0; iu < segU; iu++) {
+      const a = iv * row + iu;
+      const b = a + row;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  computeSmoothNormals(verts, idx);
+  return buildMesh(verts, idx);
+}
+
+function createBoxMesh(w, h, d, colorFn) {
+  const hw = w*0.5, hh = h*0.5, hd = d*0.5;
+  const faces = [
+    { n:[0,0,1],  v:[[-hw,-hh,hd],[hw,-hh,hd],[hw,hh,hd],[-hw,hh,hd]] },
+    { n:[0,0,-1], v:[[hw,-hh,-hd],[-hw,-hh,-hd],[-hw,hh,-hd],[hw,hh,-hd]] },
+    { n:[0,1,0],  v:[[-hw,hh,hd],[hw,hh,hd],[hw,hh,-hd],[-hw,hh,-hd]] },
+    { n:[0,-1,0], v:[[-hw,-hh,-hd],[hw,-hh,-hd],[hw,-hh,hd],[-hw,-hh,hd]] },
+    { n:[1,0,0],  v:[[hw,-hh,hd],[hw,-hh,-hd],[hw,hh,-hd],[hw,hh,hd]] },
+    { n:[-1,0,0], v:[[-hw,-hh,-hd],[-hw,-hh,hd],[-hw,hh,hd],[-hw,hh,-hd]] }
+  ];
+  const uvs = [[0,0],[1,0],[1,1],[0,1]];
+  const verts = [], idx = [];
+  for (const f of faces) {
+    const base = verts.length / 12;
+    for (let i = 0; i < 4; i++) {
+      const p = f.v[i];
+      const col = colorFn ? colorFn(p[0], p[1], p[2], f.n) : [1,1,1];
+      verts.push(p[0], p[1], p[2], f.n[0], f.n[1], f.n[2], uvs[i][0], uvs[i][1], col[0], col[1], col[2], 1);
+    }
+    idx.push(base, base+1, base+2, base, base+2, base+3);
+  }
+  return buildMesh(verts, idx);
+}
+
+function createLatheMesh(profile, segs, closedEnds = false) {
+  // profile: array of [radius, y, vTex, ao]
+  const verts = [], idx = [];
+  const rows = profile.length;
+  for (let ir = 0; ir < rows; ir++) {
+    const [rad, py, vt, ao = 1] = profile[ir];
+    for (let is = 0; is <= segs; is++) {
+      const u = is / segs;
+      const th = u * TAU;
+      const x = Math.cos(th) * rad;
+      const z = Math.sin(th) * rad;
+      verts.push(x, py, z, 0, 1, 0, u, vt, ao, ao, ao, 1);
+    }
+  }
+  const stride = segs + 1;
+  for (let ir = 0; ir < rows - 1; ir++) {
+    for (let is = 0; is < segs; is++) {
+      const a = ir * stride + is;
+      const b = a + stride;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  computeSmoothNormals(verts, idx);
+  return buildMesh(verts, idx);
+}
+
+function createCylinderMesh(rTop, rBot, h, segs = 20) {
+  const hh = h * 0.5;
+  return createLatheMesh([
+    [0.0001, -hh, 0, 0.85],
+    [rBot, -hh, 0.05, 0.92],
+    [rBot, -hh + 0.005, 0.08, 0.96],
+    [rTop, hh - 0.005, 0.92, 1.0],
+    [rTop, hh, 0.95, 1.0],
+    [0.0001, hh, 1.0, 1.0]
+  ], segs);
+}
+
+function createPlaneMesh(w, h, segX = 1, segY = 1) {
+  const verts = [], idx = [];
+  for (let iy = 0; iy <= segY; iy++) {
+    const v = iy / segY;
+    for (let ix = 0; ix <= segX; ix++) {
+      const u = ix / segX;
+      verts.push((u - 0.5) * w, (v - 0.5) * h, 0, 0, 0, 1, u, v, 1, 1, 1, 1);
+    }
+  }
+  const row = segX + 1;
+  for (let iy = 0; iy < segY; iy++) {
+    for (let ix = 0; ix < segX; ix++) {
+      const a = iy * row + ix;
+      const b = a + row;
+      idx.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  }
+  return buildMesh(verts, idx);
+}
+
+function createDiskMesh(radius, segs = 28) {
+  const verts = [0, 0, 0, 0, 1, 0, 0.5, 0.5, 1, 1, 1, 1];
+  const idx = [];
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * TAU;
+    const c = Math.cos(a), s = Math.sin(a);
+    verts.push(c * radius, 0, s * radius, 0, 1, 0, 0.5 + c * 0.5, 0.5 + s * 0.5, 1, 1, 1, 1);
+  }
+  for (let i = 1; i <= segs; i++) idx.push(0, i + 1, i);
+  return buildMesh(verts, idx);
+}
+
+// Bedding terrain height function (shared by terrain mesh, hamster feet, grains & shavings!)
+function beddingHeight(x, z) {
+  // Slight gentle cozy mounds around perimeter, subtle nest hollow near house (-1.05, -0.45), flat near bowl & wheel
+  let h = 0.085
+    + 0.022 * Math.sin(x * 1.65 + 0.4) * Math.cos(z * 1.9 - 0.3)
+    + 0.014 * Math.cos(x * 3.1 - z * 2.4);
+  // Gentle raised banks near back & left walls
+  const edgeBoost = smoothstep(1.35, 2.5, Math.abs(x)) * 0.055 + smoothstep(0.95, 1.75, -z) * 0.065;
+  h += edgeBoost;
+  // Soft cozy nest dip right outside the wooden house entrance (-1.05, -0.42)
+  const dn = Math.hypot(x - (-1.05), z - (-0.42));
+  h -= 0.038 * Math.exp(-dn * dn * 5.2);
+  // Keep area under wheel & bowl nicely level
+  const db = Math.hypot(x - 0.72, z - 0.62);
+  if (db < 0.55) h = lerp(0.075, h, smoothstep(0.32, 0.55, db));
+  const dw = Math.hypot(x - 1.48, z - (-0.92));
+  if (dw < 0.75) h = lerp(0.08, h, smoothstep(0.45, 0.75, dw));
+  return h;
+}
+
+function createBeddingTerrain() {
+  const segX = 48, segZ = 36;
+  const W = 5.1, D = 3.5;
+  const verts = [], idx = [];
+  for (let iz = 0; iz <= segZ; iz++) {
+    const v = iz / segZ;
+    const z = (v - 0.5) * D;
+    for (let ix = 0; ix <= segX; ix++) {
+      const u = ix / segX;
+      const x = (u - 0.5) * W;
+      const y = beddingHeight(x, z);
+      // Warm soft AO near enclosure edges and inside nest dip
+      const edgeAO = 1.0 - 0.16 * smoothstep(2.0, 2.55, Math.abs(x)) - 0.14 * smoothstep(1.3, 1.75, Math.abs(z));
+      const dn = Math.hypot(x - (-1.05), z - (-0.42));
+      const nestTint = smoothstep(0.42, 0.12, dn);
+      const r = edgeAO * lerp(1.0, 1.04, nestTint);
+      const g = edgeAO * lerp(1.0, 0.99, nestTint);
+      const b = edgeAO * lerp(1.0, 0.94, nestTint);
+      verts.push(x, y, z, 0, 1, 0, u * 4.5, v * 3.2, r, g, b, 1);
+    }
+  }
+  const row = segX + 1;
+  for (let iz = 0; iz < segZ; iz++) {
+    for (let ix = 0; ix < segX; ix++) {
+      const a = iz * row + ix;
+      const b = a + row;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  computeSmoothNormals(verts, idx);
+  return buildMesh(verts, idx);
+}
+
+// Curled wooden wood-chip shaving flake (for instancing!)
+function createWoodShavingMesh() {
+  const verts = [], idx = [];
+  const segU = 5, segV = 3;
+  for (let iv = 0; iv <= segV; iv++) {
+    const v = iv / segV;
+    const z = (v - 0.5) * 0.085;
+    for (let iu = 0; iu <= segU; iu++) {
+      const u = iu / segU;
+      const x = (u - 0.5) * 0.14;
+      const curl = Math.sin(u * PI) * 0.024 + (v - 0.5) * (u - 0.5) * 0.05;
+      verts.push(x, curl, z, 0, 1, 0, u, v, 1, 1, 1, 1);
+    }
+  }
+  const row = segU + 1;
+  for (let iv = 0; iv < segV; iv++) {
+    for (let iu = 0; iu < segU; iu++) {
+      const a = iv * row + iu, b = a + row;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  computeSmoothNormals(verts, idx);
+  return buildMesh(verts, idx);
+}
+
+// Custom sculpted Wooden House with real arched doorway!
+function createWoodenHouseMesh() {
+  // Combine clean walls with an arched front entrance (back wall, left, right, front-left, front-right, front-arch-top, floor, roof)
+  const verts = [], idx = [];
+  function pushQuad(p0, p1, p2, p3, n, uvScale = 1, col = [1,1,1]) {
+    const base = verts.length / 12;
+    const pts = [p0, p1, p2, p3];
+    const uvs = [[0,0],[uvScale,0],[uvScale,uvScale],[0,uvScale]];
+    for (let i = 0; i < 4; i++) {
+      verts.push(pts[i][0], pts[i][1], pts[i][2], n[0], n[1], n[2], uvs[i][0], uvs[i][1], col[0], col[1], col[2], 1);
+    }
+    idx.push(base, base+1, base+2, base, base+2, base+3);
+  }
+  function pushBox(cx, cy, cz, w, h, d, ao = 1) {
+    const x0=cx-w/2, x1=cx+w/2, y0=cy-h/2, y1=cy+h/2, z0=cz-d/2, z1=cz+d/2;
+    const c = [ao, ao, ao];
+    pushQuad([x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1],[0,0,1], 1, c);
+    pushQuad([x1,y0,z0],[x0,y0,z0],[x0,y1,z0],[x1,y1,z0],[0,0,-1], 1, c);
+    pushQuad([x0,y1,z1],[x1,y1,z1],[x1,y1,z0],[x0,y1,z0],[0,1,0], 1, c);
+    pushQuad([x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1],[0,-1,0], 1, c);
+    pushQuad([x1,y0,z1],[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[1,0,0], 1, c);
+    pushQuad([x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0],[-1,0,0], 1, c);
+  }
+  const W = 1.18, H = 0.78, D = 0.96, T = 0.085;
+  // Back wall
+  pushBox(0, H/2, -D/2 + T/2, W, H, T, 0.95);
+  // Left & Right walls
+  pushBox(-W/2 + T/2, H/2, 0, T, H, D, 0.98);
+  pushBox( W/2 - T/2, H/2, 0, T, H, D, 0.98);
+  // Dark cozy interior back-inner liner so doorway looks deep and inviting
+  pushBox(0, H/2, -D/2 + T + 0.02, W - T*2, H - 0.06, 0.04, 0.28);
+  pushBox(0, 0.04, 0, W - T*1.5, 0.06, D - T*1.5, 0.35);
+  // Front wall piers left & right of doorway (door width = 0.48, height = 0.52)
+  const pierW = (W - 0.48) * 0.5;
+  pushBox(-W/2 + pierW/2, H/2, D/2 - T/2, pierW, H, T, 1.0);
+  pushBox( W/2 - pierW/2, H/2, D/2 - T/2, pierW, H, T, 1.0);
+  // Front lintel above doorway
+  const lintelH = H - 0.50;
+  pushBox(0, H - lintelH/2, D/2 - T/2, 0.52, lintelH, T, 1.0);
+  // Cute corner arch blocks inside upper doorway corners for rounded arch look
+  pushBox(-0.21, 0.47, D/2 - T/2, 0.09, 0.09, T * 0.98, 0.92);
+  pushBox( 0.21, 0.47, D/2 - T/2, 0.09, 0.09, T * 0.98, 0.92);
+  // Slightly overhanging cozy birch roof slab + raised wooden rim
+  pushBox(0, H + 0.045, 0.02, W + 0.16, 0.09, D + 0.16, 1.03);
+  // Cute tiny decorative front roof lip
+  pushBox(0, H + 0.085, D/2 + 0.04, W + 0.18, 0.045, 0.06, 1.04);
+  return buildMesh(verts, idx);
+}
+
+// Open-front Exercise Wheel Drum (wood rim + back disc)
+function createWheelDrumMesh(radius, depth, segs = 36) {
+  // Lathe a hollow open-front drum with back wall!
+  const rOut = radius, rIn = radius - 0.045;
+  const zBack = -depth * 0.5, zFront = depth * 0.5;
+  // Since lathe rotates around Y, we build around Y then rotate X by PI/2 in scene!
+  return createLatheMesh([
+    [0.001, zBack - 0.03, 0.0, 0.95],
+    [rOut, zBack - 0.03, 0.25, 0.96],
+    [rOut, zFront, 0.65, 1.0],
+    [rIn, zFront, 0.72, 1.0],
+    [rIn, zBack + 0.01, 0.95, 0.85],
+    [0.001, zBack + 0.01, 1.0, 0.88]
+  ], segs);
+}
+function createWheelCorkMesh(radius, depth, segs = 36) {
+  const rIn = radius - 0.048, rC = radius - 0.064;
+  const zBack = -depth * 0.5 + 0.02, zFront = depth * 0.5 - 0.015;
+  return createLatheMesh([
+    [rIn, zFront, 0.0, 0.96],
+    [rC, zFront, 0.1, 1.0],
+    [rC, zBack, 0.9, 0.92],
+    [rIn, zBack, 1.0, 0.9]
+  ], segs);
+}
+
+// Build all scene meshes once
+function buildMeshes() {
+  const M = {};
+
+  // --- Golden Hamster Organic Anatomy ---
+  // Plump pear-shaped body (wider rump, soft belly, tapering shoulders)
+  M.hamBody = createParametricSphere(28, 22, (x, y, z, u, v) => {
+    // z > 0 is front (chest), z < 0 is rump
+    const rump = smoothstep(0.5, -0.7, z);
+    const rx = (0.25 + 0.075 * rump) * (1.0 - 0.08 * Math.max(0, y));
+    const ry = 0.235 + 0.035 * rump;
+    const rz = 0.34;
+    let py = y * ry;
+    if (y < -0.35) py = lerp(py, -ry * 0.78, smoothstep(-0.35, -1.0, y) * 0.35);
+    return [x * rx, py, z * rz];
+  });
+
+  // Cute rounded head with soft tapered snout
+  M.hamHead = createParametricSphere(26, 20, (x, y, z, u, v) => {
+    const snout = smoothstep(0.25, 1.0, z);
+    const rx = 0.215 * (1.0 - 0.42 * snout);
+    const ry = 0.195 * (1.0 - 0.36 * snout);
+    const rz = 0.235 + 0.035 * snout;
+    // Slight adorable rounded forehead & dipped muzzle
+    const py = y * ry - 0.025 * snout;
+    return [x * rx, py, z * rz];
+  });
+
+  // Independent sculpted Cheek Pouch (expands into iconic peanut-cheek!)
+  M.hamCheek = createParametricSphere(20, 16, (x, y, z) => {
+    // Slightly bean-shaped, plump outward and backward
+    const back = smoothstep(0.4, -0.8, z);
+    const rx = 0.112 * (1.0 + 0.14 * back);
+    const ry = 0.105 * (1.0 + 0.10 * back);
+    const rz = 0.125;
+    return [x * rx, y * ry - 0.01 * back, z * rz];
+  });
+
+  // Thin cupped petal-shaped hamster ear!
+  M.hamEar = createParametricSphere(16, 12, (x, y, z) => {
+    const rx = 0.068 * (1.0 - 0.15 * Math.max(0, -y));
+    const ry = 0.082;
+    const rz = 0.022;
+    // Slight concave cup facing +z
+    const cup = -0.018 * (x * x + y * y);
+    return [x * rx, y * ry + 0.04, z * rz + cup];
+  });
+
+  // Cute soft paw mitten
+  M.hamPaw = createParametricSphere(14, 10, (x, y, z) => [x * 0.046, y * 0.032, z * 0.064]);
+  // Tiny stubby tail & glossy eyes & pink nose
+  M.sphere = createParametricSphere(18, 14, null);
+  M.sphereLow = createParametricSphere(12, 10, null);
+
+  // Plump grooved wheat berry / kernel (also reused for sunflower seed with different scale/tex!)
+  M.kernel = createParametricSphere(12, 10, (x, y, z) => {
+    const tip = Math.abs(y);
+    const pinch = 1.0 - 0.45 * tip * tip;
+    // Tiny ventral wheat grain crease
+    const crease = z > 0.3 ? 1.0 - 0.14 * smoothstep(0.3, 1.0, z) * (1.0 - Math.abs(x)) : 1.0;
+    return [x * 0.034 * pinch, y * 0.064, z * 0.028 * pinch * crease];
+  });
+
+  // Bedding & instanced shavings
+  M.bedding = createBeddingTerrain();
+  M.shaving = createWoodShavingMesh();
+
+  // Ceramic Food Bowl (thick handmade rounded lip + concave interior)
+  M.bowl = createLatheMesh([
+    [0.001, 0.00, 0.0, 0.72],
+    [0.31,  0.00, 0.15, 0.78],
+    [0.39,  0.06, 0.30, 0.90],
+    [0.42,  0.19, 0.50, 0.98],
+    [0.41,  0.235, 0.56, 1.02],
+    [0.37,  0.24, 0.60, 1.02],
+    [0.34,  0.21, 0.66, 0.95],
+    [0.30,  0.075, 0.85, 0.82],
+    [0.001, 0.055, 1.0, 0.78]
+  ], 34);
+
+  // Water Dish (smaller sleek stoneware dish)
+  M.waterDish = createLatheMesh([
+    [0.001, 0.00, 0.0, 0.75],
+    [0.21,  0.00, 0.15, 0.82],
+    [0.28,  0.05, 0.32, 0.92],
+    [0.29,  0.14, 0.52, 1.0],
+    [0.26,  0.15, 0.58, 1.0],
+    [0.23,  0.12, 0.68, 0.92],
+    [0.20,  0.04, 0.88, 0.80],
+    [0.001, 0.035, 1.0, 0.78]
+  ], 28);
+  M.waterDisk = createDiskMesh(0.245, 28);
+
+  // Woven Wheat Basket (cozy flared willow basket)
+  M.basket = createLatheMesh([
+    [0.001, 0.00, 0.0, 0.70],
+    [0.30,  0.00, 0.12, 0.78],
+    [0.38,  0.22, 0.35, 0.92],
+    [0.44,  0.46, 0.55, 1.0],
+    [0.47,  0.52, 0.60, 1.02],
+    [0.43,  0.54, 0.65, 1.0],
+    [0.39,  0.48, 0.72, 0.86],
+    [0.33,  0.14, 0.90, 0.55],
+    [0.001, 0.08, 1.0, 0.45]
+  ], 30);
+
+  // Corked Glass Wheat Jar
+  M.jar = createLatheMesh([
+    [0.001, 0.00, 0.0, 0.88],
+    [0.25,  0.00, 0.10, 0.92],
+    [0.28,  0.06, 0.18, 0.98],
+    [0.28,  0.44, 0.58, 1.0],
+    [0.22,  0.54, 0.72, 1.0],
+    [0.21,  0.63, 0.84, 1.0],
+    [0.235, 0.65, 0.90, 1.02],
+    [0.20,  0.66, 0.95, 0.95],
+    [0.185, 0.56, 1.0, 0.85]
+  ], 28);
+  M.jarContents = createCylinderMesh(0.245, 0.245, 0.40, 22);
+  M.cork = createCylinderMesh(0.205, 0.175, 0.13, 20);
+
+  // Wooden House, Wheel, Bridge Logs
+  M.house = createWoodenHouseMesh();
+  M.wheelDrum = createWheelDrumMesh(0.66, 0.34, 36);
+  M.wheelCork = createWheelCorkMesh(0.66, 0.34, 36);
+  M.cyl = createCylinderMesh(1, 1, 1, 18);
+  M.box = createBoxMesh(1, 1, 1);
+  M.plane = createPlaneMesh(1, 1, 1, 1);
+
+  // Soft Draped Sheer Curtain
+  {
+    const verts = [], idx = [];
+    const sx = 18, sy = 14;
+    for (let iy = 0; iy <= sy; iy++) {
+      const v = iy / sy;
+      for (let ix = 0; ix <= sx; ix++) {
+        const u = ix / sx;
+        const fold = Math.sin(u * PI * 7.0) * 0.085 * (1.0 - v * 0.25);
+        const flare = (1.0 - v) * 0.12 * (u - 0.5);
+        verts.push((u - 0.5) * 1.15 + flare, (v - 0.5) * 3.85, fold, 0, 0, 1, u * 2, v * 3, 1, 1, 1, 1);
+      }
+    }
+    const row = sx + 1;
+    for (let iy = 0; iy < sy; iy++) {
+      for (let ix = 0; ix < sx; ix++) {
+        const a = iy * row + ix, b = a + row;
+        idx.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+    computeSmoothNormals(verts, idx);
+    M.curtain = buildMesh(verts, idx);
+  }
+
+  // Bedside Ceramic Lamp Base & Linen Shade
+  M.lampBase = createLatheMesh([
+    [0.001, 0.00, 0.0, 0.78],
+    [0.24,  0.00, 0.10, 0.85],
+    [0.32,  0.14, 0.28, 0.96],
+    [0.34,  0.34, 0.50, 1.0],
+    [0.26,  0.56, 0.72, 1.0],
+    [0.12,  0.70, 0.88, 0.98],
+    [0.10,  0.80, 1.0, 0.95]
+  ], 28);
+  M.lampShade = createLatheMesh([
+    [0.54, 0.00, 0.0, 0.94],
+    [0.44, 0.34, 0.45, 1.0],
+    [0.33, 0.68, 0.85, 0.98],
+    [0.31, 0.68, 0.88, 0.92],
+    [0.52, 0.00, 1.0, 0.88]
+  ], 32);
+
+  return M;
+}
+const MESH = buildMeshes();
+
+// ============================================================================
+// 6. SHADOW MAP FRAMEBUFFER
+// ============================================================================
+const SHADOW_SIZE = (window.innerWidth < 768) ? 1024 : 2048;
+const shadowTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const shadowFBO = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+gl.drawBuffers([gl.NONE]);
+gl.readBuffer(gl.NONE);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+// ============================================================================
+// 7. WORLD STATE, PROPS, SHAVINGS, GRAINS, WHEAT STALKS & PARTICLES
+// ============================================================================
+const BOWL_POS = { x: 0.72, y: 0.075, z: 0.62 };
+const WATER_POS = { x: 1.72, y: 0.08, z: 0.34 };
+const HOUSE_POS = { x: -1.52, y: 0.07, z: -0.92, rotY: 0.38 };
+const NEST_POS = { x: -1.02, y: beddingHeight(-1.02, -0.38), z: -0.38 };
+const WHEEL_POS = { x: 1.44, y: 0.08, z: -0.92, rotY: -0.44 };
+const BRIDGE_POS = { x: -0.02, y: 0.075, z: -1.08 };
+const BASKET_POS = { x: -1.86, y: 0.08, z: 0.74 };
+const JAR_POS = { x: 1.94, y: 0.08, z: 0.94 };
+const LAMP_POS = { x: 2.66, y: 0.0, z: -1.42 };
+
+const world = {
+  time: 0,
+  skyPhase: 0.14,      // 0 = golden late afternoon, 0.45 = coral sunset, 0.85 = starry twilight
+  skyTargetBoost: 0,
+  lampOn: true,
+  lampGlow: 0.85,
+  lampPullAnim: 0,
+  waterRippleAge: 10,
+  wheelAngle: 0,
+  wheelVel: 0,
+  houseKnockAnim: 0,
+  jarTiltAnim: 0,
+  breezeAnim: 0,
+  hoardCount: 0,
+  // Camera
+  camPos: [0, 3.85, 5.95],
+  camTarget: [0, 0.68, -0.15],
+  projMat: M4.create(),
+  viewMat: M4.create(),
+  vpMat: M4.create(),
+  invVPMat: M4.create(),
+  lightVP: M4.create(),
+  sunDir: [-0.64, 0.68, 0.32],
+  sunColor: [1.0, 0.76, 0.48],
+  rimDir: [-0.25, 0.42, -0.87],
+  rimColor: [0.95, 0.56, 0.34],
+  skyColor: [0.42, 0.38, 0.52],
+  groundColor: [0.36, 0.25, 0.18],
+  lampColor: [1.5, 0.96, 0.44],
+  skyZenith: [0.22, 0.26, 0.48],
+  skyMid: [0.76, 0.44, 0.42],
+  skyHorizon: [1.0, 0.66, 0.36]
+};
+
+// --- Instanced Wood Shavings (320 curled birch flakes) ---
+const SHAVING_COUNT = 320;
+const instShavings = createInstancedMesh(MESH.shaving, SHAVING_COUNT);
+const shavings = [];
+for (let i = 0; i < SHAVING_COUNT; i++) {
+  let x = randRange(-2.38, 2.38);
+  let z = randRange(-1.58, 1.54);
+  // Keep clear of bowl & house interior
+  if (Math.hypot(x - BOWL_POS.x, z - BOWL_POS.z) < 0.46) { x += 0.6; }
+  if (Math.hypot(x - WATER_POS.x, z - WATER_POS.z) < 0.34) { z -= 0.4; }
+  if (Math.hypot(x - HOUSE_POS.x, z - HOUSE_POS.z) < 0.56) { z += 0.72; }
+  x = clamp(x, -2.38, 2.38);
+  z = clamp(z, -1.58, 1.52);
+  const by = beddingHeight(x, z) + 0.012;
+  shavings.push({
+    x, y: by, z,
+    vx: 0, vy: 0, vz: 0,
+    ry: randRange(0, TAU),
+    rx: randRange(-0.25, 0.25),
+    rz: randRange(-0.25, 0.25),
+    vrot: 0,
+    scale: randRange(0.75, 1.38),
+    tint: [randRange(0.92, 1.06), randRange(0.86, 1.0), randRange(0.74, 0.92)]
+  });
+}
+
+function disturbBedding(wx, wz, radius, impulse, fromFinger = false) {
+  let moved = 0;
+  for (let i = 0; i < shavings.length; i++) {
+    const s = shavings[i];
+    const dx = s.x - wx, dz = s.z - wz;
+    const d2 = dx*dx + dz*dz;
+    if (d2 < radius * radius) {
+      const d = Math.sqrt(d2) + 0.001;
+      const f = (1 - d / radius) * impulse;
+      s.vx += (dx / d) * f * randRange(0.7, 1.4);
+      s.vz += (dz / d) * f * randRange(0.7, 1.4);
+      s.vy += f * randRange(0.65, 1.35);
+      s.vrot += randRange(-8, 8) * f;
+      moved++;
+    }
+  }
+  if (moved > 0) {
+    sfx.playBeddingRustle(clamp(moved * 0.06, 0.3, 1.2));
+  }
+  // Chance to unearth a hidden golden grain or special striped sunflower seed when dragging bedding!
+  if (fromFinger && Math.random() < 0.26) {
+    const isSunflower = Math.random() < 0.34;
+    spawnGrain(
+      wx + randRange(-0.12, 0.12),
+      beddingHeight(wx, wz) + 0.06,
+      wz + randRange(-0.12, 0.12),
+      randRange(-0.5, 0.5),
+      randRange(1.2, 1.9),
+      randRange(-0.5, 0.5),
+      isSunflower ? 'sunflower' : 'wheat',
+      false
+    );
+    spawnSparkle(wx, beddingHeight(wx, wz) + 0.12, wz, isSunflower ? [1.0, 0.88, 0.5] : [1.0, 0.82, 0.42], 4);
+  }
+}
+
+// --- Loose Grains & Hoarded Treasure Pile (Instanced Kernels) ---
+const MAX_GRAINS = 180;
+const instWheatGrains = createInstancedMesh(MESH.kernel, MAX_GRAINS);
+const instSunGrains = createInstancedMesh(MESH.kernel, 48);
+const grains = [];
+
+function spawnGrain(x, y, z, vx, vy, vz, kind = 'wheat', isHoard = false) {
+  if (grains.length >= MAX_GRAINS - 2) {
+    // Recycle oldest non-hoard grain first, else oldest hoard
+    let idx = grains.findIndex(g => !g.isHoard && !g.claimed);
+    if (idx < 0) idx = 0;
+    grains.splice(idx, 1);
+  }
+  grains.push({
+    x, y, z, vx, vy, vz,
+    rx: randRange(0, TAU), ry: randRange(0, TAU), rz: randRange(0, TAU),
+    kind, // 'wheat' | 'sunflower'
+    isHoard,
+    inBowl: false,
+    settled: false,
+    claimed: false,
+    age: 0
+  });
+}
+
+// Pre-seed a few welcoming grains in the ceramic bowl & cozy hoard so the scene feels lived-in right away
+for (let i = 0; i < 8; i++) {
+  const a = randRange(0, TAU), r = randRange(0, 0.20);
+  spawnGrain(BOWL_POS.x + Math.cos(a)*r, BOWL_POS.y + 0.09 + i*0.008, BOWL_POS.z + Math.sin(a)*r, 0, 0, 0, 'wheat', false);
+}
+for (let i = 0; i < 4; i++) {
+  const a = randRange(0, TAU), r = randRange(0, 0.16);
+  spawnGrain(NEST_POS.x + Math.cos(a)*r, NEST_POS.y + 0.04, NEST_POS.z + Math.sin(a)*r, 0, 0, 0, 'wheat', true);
+}
+
+// --- Interactive Wheat Stalks (麦の穂) ---
+const wheatStalks = [];
+const KERNELS_PER_STALK = 16;
+const instStalkKernels = createInstancedMesh(MESH.kernel, 12 * KERNELS_PER_STALK);
+
+function createWheatStalk(slotIndex) {
+  const angle = (slotIndex / 7) * TAU + 0.35;
+  const dist = (slotIndex === 0) ? 0.02 : randRange(0.11, 0.22);
+  const bx = BASKET_POS.x + Math.cos(angle) * dist;
+  const bz = BASKET_POS.z + Math.sin(angle) * dist;
+  const leanX = Math.cos(angle) * randRange(0.14, 0.36) + 0.08;
+  const leanZ = Math.sin(angle) * randRange(0.14, 0.32) - 0.04;
+  const kernels = [];
+  for (let k = 0; k < KERNELS_PER_STALK; k++) {
+    const t = k / (KERNELS_PER_STALK - 1);
+    const side = (k & 1) ? 1 : -1;
+    kernels.push({
+      t, side,
+      angle: side * 0.52 + (k % 3 - 1) * 0.18,
+      present: true,
+      scale: 0.92 + Math.sin(t * PI) * 0.32
+    });
+  }
+  return {
+    slotIndex,
+    state: 'basket', // 'basket' | 'dragged' | 'dropped' | 'regrowing'
+    baseX: bx, baseY: BASKET_POS.y + 0.18, baseZ: bz,
+    x: bx, y: BASKET_POS.y + 0.18, z: bz,
+    vx: 0, vy: 0, vz: 0,
+    leanX, leanZ,
+    bendX: 0, bendZ: 0,
+    bendVX: 0, bendVZ: 0,
+    length: randRange(1.02, 1.24),
+    dropRotY: randRange(0, TAU),
+    growScale: 1.0,
+    shakeAccum: 0,
+    kernels,
+    remaining: KERNELS_PER_STALK
+  };
+}
+for (let i = 0; i < 7; i++) {
+  wheatStalks.push(createWheatStalk(i));
+}
+
+function getStalkHeadWorldPos(st) {
+  if (st.state === 'dropped') {
+    const len = st.length * 0.72;
+    return [
+      st.x + Math.cos(st.dropRotY) * len * 0.5,
+      st.y + 0.06,
+      st.z + Math.sin(st.dropRotY) * len * 0.5
+    ];
+  }
+  const lx = st.leanX + st.bendX;
+  const lz = st.leanZ + st.bendZ;
+  const len = st.length * st.growScale;
+  return [
+    st.x + lx * len * 0.68,
+    st.y + len * 0.88,
+    st.z + lz * len * 0.68
+  ];
+}
+
+function popKernelFromStalk(st, dropToWorld = true, targetVel = null) {
+  // Pop from top downward for authentic stripping!
+  for (let i = st.kernels.length - 1; i >= 0; i--) {
+    const kn = st.kernels[i];
+    if (kn.present) {
+      kn.present = false;
+      st.remaining--;
+      const head = getStalkHeadWorldPos(st);
+      if (dropToWorld) {
+        const vx = targetVel ? targetVel[0] : randRange(-0.55, 0.55);
+        const vy = targetVel ? targetVel[1] : randRange(0.45, 1.15);
+        const vz = targetVel ? targetVel[2] : randRange(-0.55, 0.55);
+        spawnGrain(head[0] + randRange(-0.04,0.04), head[1], head[2] + randRange(-0.04,0.04), vx, vy, vz, 'wheat', false);
+      }
+      spawnSparkle(head[0], head[1], head[2], [1.0, 0.86, 0.45], 2);
+      st.bendVX += randRange(-1.4, 1.4);
+      st.bendVZ += randRange(-1.4, 1.4);
+      return head;
+    }
+  }
+  return null;
+}
+
+function regrowStalkInSlot(slotIndex) {
+  if (wheatStalks.some(s => s.slotIndex === slotIndex && (s.state === 'basket' || s.state === 'regrowing'))) {
+    return;
+  }
+  const st = createWheatStalk(slotIndex);
+  st.state = 'regrowing';
+  st.growScale = 0.02;
+  wheatStalks.push(st);
+}
+
+// --- Floating Dust Motes & Warm Interactive Sparkles ---
+const dustMotes = [];
+for (let i = 0; i < 42; i++) {
+  dustMotes.push({
+    x: randRange(-2.6, 2.4),
+    y: randRange(0.35, 2.9),
+    z: randRange(-2.0, 1.4),
+    phase: randRange(0, TAU),
+    speed: randRange(0.18, 0.42),
+    size: randRange(0.024, 0.055)
+  });
+}
+
+const sparkles = [];
+function spawnSparkle(x, y, z, color = [1.0, 0.88, 0.58], count = 5) {
+  for (let i = 0; i < count; i++) {
+    if (sparkles.length > 90) sparkles.shift();
+    sparkles.push({
+      x: x + randRange(-0.12, 0.12),
+      y: y + randRange(-0.04, 0.12),
+      z: z + randRange(-0.12, 0.12),
+      vx: randRange(-0.32, 0.32),
+      vy: randRange(0.28, 0.78),
+      vz: randRange(-0.32, 0.32),
+      life: 0,
+      maxLife: randRange(0.55, 1.15),
+      size: randRange(0.045, 0.095),
+      color
+    });
+  }
+}
+
+// ============================================================================
+// 8. THE GOLDEN HAMSTER ("はむちゃん") — PHYSICS CHEEKS, EXPRESSIONS & AI
+// ============================================================================
+const ham = {
+  x: -0.15, y: beddingHeight(-0.15, 0.18), z: 0.18,
+  rotY: 0.25,
+  targetX: -0.15, targetZ: 0.18,
+  speed: 0,
+  walkPhase: 0,
+  state: 'idle', // idle, walk, beg, eat_stalk, eat_ground, petted, groom, unpack, wheel, dig, drink, house_peek, sleep, stretch
+  stateTime: 0,
+  stateDur: 2.2,
+  nextAction: null,
+  targetGrain: null,
+  targetStalk: null,
+
+  // Cheek Pouches (Left & Right independent spring-physics!)
+  cheekFillL: 0.0,     // 0.0 .. 1.0 (each grain adds ~0.16 => ~6 grains per cheek = 12 max!)
+  cheekFillR: 0.0,
+  cheekNextSide: 1,    // alternates left/right
+  cheekSpringL: 0, cheekVelL: 0,
+  cheekSpringR: 0, cheekVelR: 0,
+  storedGrains: [],    // ['wheat', 'sunflower', ...]
+
+  // Expressive Procedural Pose & Blending
+  standAmt: 0,         // 0 = four legs, 1 = standing upright (beg/sit/eat)
+  loafAmt: 0,          // 0 = normal, 1 = melted mochi pancake when petted
+  sleepAmt: 0,         // 0 = awake, 1 = curled sleeping ball
+  stretchAmt: 0,       // 0..1 yawn & front stretch
+  headYaw: 0,
+  headPitch: 0,
+  headRoll: 0,
+  earPerk: 0.6,        // 0 = relaxed back, 1 = perked forward
+  eyeBlink: 0,         // 0 = open, 1 = closed
+  blinkTimer: 2.4,
+  happyEyes: 0,        // 0 = round glossy, 1 = happy crescent squint
+  noseTwitch: 0,
+  mouthOpen: 0,
+  nibblePhase: 0,
+  groomPhase: 0,
+  unpackPhase: 0,
+  digPhase: 0,
+  digTimer: 0,
+  petDecay: 0,
+  petRubAccum: 0,
+  hopY: 0,
+  hopVY: 0,
+  inHouse: false,
+  peekAmt: 0,
+  heldGrainKind: null, // visible grain held between paws while eating!
+  eatActionTimer: 0,
+  nibbleSubTimer: 0,
+  purrTimer: 0,
+  thirst: 0,           // increases as it eats; triggers cute water-dish sipping!
+  boredom: 0
+};
+
+function totalCheekFill() {
+  return (ham.cheekFillL + ham.cheekFillR) * 0.5;
+}
+function stuffOneGrain(kind = 'wheat') {
+  const side = (ham.cheekFillL <= ham.cheekFillR) ? -1 : 1;
+  const add = (kind === 'sunflower') ? 0.21 : 0.165;
+  if (side < 0) {
+    ham.cheekFillL = clamp(ham.cheekFillL + add, 0, 1.05);
+    ham.cheekVelL += 5.4;
+  } else {
+    ham.cheekFillR = clamp(ham.cheekFillR + add, 0, 1.05);
+    ham.cheekVelR += 5.4;
+  }
+  ham.storedGrains.push(kind);
+  ham.thirst += 0.16;
+  sfx.playStuffCheek(totalCheekFill());
+  spawnSparkle(ham.x, ham.y + 0.42, ham.z, [1.0, 0.90, 0.55], 4);
+}
+function pokeHamsterCheek(side) {
+  if (side < 0) ham.cheekVelL -= 6.8;
+  else ham.cheekVelR -= 6.8;
+  ham.headRoll = side * -0.28;
+  ham.happyEyes = 1.0;
+  sfx.playCheekSquish(totalCheekFill());
+  sfx.playSqueak(true);
+  spawnSparkle(ham.x, ham.y + 0.36, ham.z, [1.0, 0.84, 0.72], 5);
+}
+
+function setHamState(st, dur = 2.0) {
+  ham.state = st;
+  ham.stateTime = 0;
+  ham.stateDur = dur;
+  if (st !== 'eat_ground' && st !== 'eat_stalk') {
+    ham.heldGrainKind = null;
+  }
+  if (st !== 'house_peek') {
+    ham.inHouse = false;
+  }
+}
+
+function findBestLooseGrain() {
+  let best = null, bestScore = 999;
+  for (let i = 0; i < grains.length; i++) {
+    const g = grains[i];
+    if (g.isHoard || g.claimed) continue;
+    if (g.y > 0.55) continue;
+    const d = Math.hypot(g.x - ham.x, g.z - ham.z);
+    // Prefer sunflower seeds & bowl grains!
+    const bonus = (g.kind === 'sunflower' ? -0.9 : 0) + (g.inBowl ? -0.35 : 0);
+    if (d + bonus < bestScore) {
+      bestScore = d + bonus;
+      best = g;
+    }
+  }
+  return best;
+}
+
+function findDroppedStalk() {
+  let best = null, bestD = 999;
+  for (const st of wheatStalks) {
+    if (st.state === 'dropped' && st.remaining > 0) {
+      const hp = getStalkHeadWorldPos(st);
+      const d = Math.hypot(hp[0] - ham.x, hp[2] - ham.z);
+      if (d < bestD) { bestD = d; best = st; }
+    }
+  }
+  return best;
+}
+
+function avoidObstacles(tx, tz) {
+  // Clamp to comfortable interior habitat bounds
+  tx = clamp(tx, -2.05, 1.85);
+  tz = clamp(tz, -1.25, 1.30);
+  // Keep out of basket footprint
+  let dx = tx - BASKET_POS.x, dz = tz - BASKET_POS.z;
+  let d = Math.hypot(dx, dz);
+  if (d < 0.66) { const s = 0.66 / (d + 0.001); tx = BASKET_POS.x + dx*s; tz = BASKET_POS.z + dz*s; }
+  // Keep out of jar footprint
+  dx = tx - JAR_POS.x; dz = tz - JAR_POS.z; d = Math.hypot(dx, dz);
+  if (d < 0.50) { const s = 0.50 / (d + 0.001); tx = JAR_POS.x + dx*s; tz = JAR_POS.z + dz*s; }
+  // Keep out of wooden house solid walls (except front doorway approach)
+  dx = tx - HOUSE_POS.x; dz = tz - HOUSE_POS.z; d = Math.hypot(dx, dz);
+  if (d < 0.72) { const s = 0.72 / (d + 0.001); tx = HOUSE_POS.x + dx*s; tz = HOUSE_POS.z + dz*s; }
+  // Keep out of wheel base unless heading to wheel
+  if (ham.nextAction !== 'wheel' && ham.state !== 'wheel') {
+    dx = tx - WHEEL_POS.x; dz = tz - WHEEL_POS.z; d = Math.hypot(dx, dz);
+    if (d < 0.66) { const s = 0.66 / (d + 0.001); tx = WHEEL_POS.x + dx*s; tz = WHEEL_POS.z + dz*s; }
+  }
+  return [clamp(tx, -2.05, 1.85), clamp(tz, -1.25, 1.30)];
+}
+
+function chooseNextHamsterBehavior() {
+  // 1. If cheeks are stuffed really full (> 0.85), waddle to the nest & unpack!
+  if (totalCheekFill() >= 0.84 && ham.storedGrains.length >= 6) {
+    ham.targetX = NEST_POS.x + randRange(-0.08, 0.08);
+    ham.targetZ = NEST_POS.z + randRange(0.06, 0.16);
+    ham.nextAction = 'unpack';
+    setHamState('walk', 5.0);
+    return;
+  }
+
+  // 2. If loose grains exist and cheeks have room, trot to munch/stuff!
+  const gr = findBestLooseGrain();
+  if (gr && totalCheekFill() < 0.96) {
+    ham.targetGrain = gr;
+    // If grain is in bowl, stand nicely right beside bowl rim
+    if (gr.inBowl) {
+      const a = Math.atan2(ham.z - BOWL_POS.z, ham.x - BOWL_POS.x);
+      ham.targetX = BOWL_POS.x + Math.cos(a) * 0.44;
+      ham.targetZ = BOWL_POS.z + Math.sin(a) * 0.44;
+    } else {
+      ham.targetX = gr.x;
+      ham.targetZ = gr.z;
+    }
+    ham.nextAction = 'eat_ground';
+    setHamState('walk', 4.5);
+    return;
+  }
+
+  // 3. If a dropped wheat stalk is on the floor with kernels, go nibble it!
+  const ds = findDroppedStalk();
+  if (ds && totalCheekFill() < 0.92) {
+    const hp = getStalkHeadWorldPos(ds);
+    ham.targetStalk = ds;
+    const p = avoidObstacles(hp[0], hp[2] + 0.18);
+    ham.targetX = p[0]; ham.targetZ = p[1];
+    ham.nextAction = 'eat_dropped';
+    setHamState('walk', 4.5);
+    return;
+  }
+
+  // 4. If thirsty after snacking, trot to the stoneware water dish for a cute drink!
+  if (ham.thirst > 0.72) {
+    ham.targetX = WATER_POS.x - 0.34;
+    ham.targetZ = WATER_POS.z + 0.16;
+    ham.nextAction = 'drink';
+    setHamState('walk', 4.5);
+    return;
+  }
+
+  // 5. Variety of adorable everyday Golden Hamster behaviors!
+  const r = Math.random();
+  if (r < 0.20) {
+    // Face-washing groom (くしくし洗顔)
+    setHamState('groom', randRange(2.8, 4.2));
+  } else if (r < 0.34) {
+    // Hop into the cork wooden wheel for a cheerful jog!
+    ham.targetX = WHEEL_POS.x - 0.16;
+    ham.targetZ = WHEEL_POS.z + 0.34;
+    ham.nextAction = 'wheel';
+    setHamState('walk', 4.5);
+  } else if (r < 0.46) {
+    // Peek-a-boo at the cozy wooden house!
+    ham.targetX = NEST_POS.x;
+    ham.targetZ = NEST_POS.z;
+    ham.nextAction = (ham.storedGrains.length >= 3 && Math.random() < 0.6) ? 'unpack' : 'house_peek';
+    setHamState('walk', 4.5);
+  } else if (r < 0.56) {
+    // Playful digging in the wood shavings!
+    const p = avoidObstacles(randRange(-1.1, 0.9), randRange(-0.4, 0.9));
+    ham.targetX = p[0]; ham.targetZ = p[1];
+    ham.nextAction = 'dig';
+    setHamState('walk', 4.0);
+  } else if (r < 0.65) {
+    // Big adorable stretch & yawn!
+    setHamState('stretch', 2.4);
+  } else if (r < 0.74 && world.skyPhase > 0.52) {
+    // Cozy twilight nap near the nest!
+    ham.targetX = NEST_POS.x + 0.12;
+    ham.targetZ = NEST_POS.z + 0.14;
+    ham.nextAction = 'sleep';
+    setHamState('walk', 4.5);
+  } else {
+    // Curious wandering explore (sometimes sniffing near bridge or bowl)
+    const spots = [
+      [0.05, 0.22], [-0.45, 0.55], [0.42, -0.35], [-0.12, -0.58], [0.92, -0.12], [-0.88, 0.25]
+    ];
+    const sp = spots[Math.floor(Math.random() * spots.length)];
+    const p = avoidObstacles(sp[0] + randRange(-0.25, 0.25), sp[1] + randRange(-0.22, 0.22));
+    ham.targetX = p[0]; ham.targetZ = p[1];
+    ham.nextAction = 'idle';
+    setHamState('walk', 4.0);
+  }
+}
+
+// ============================================================================
+// 9. POINTER / TOUCH INTERACTION SYSTEM (TAP & DRAG ONLY)
+// ============================================================================
+const input = {
+  down: false,
+  pointerId: -1,
+  startX: 0, startY: 0,
+  x: 0, y: 0,
+  prevX: 0, prevY: 0,
+  movedDist: 0,
+  mode: 'none', // 'none' | 'stalk' | 'pet' | 'wheel' | 'bedding' | 'jar'
+  activeStalk: null,
+  worldHover: [0, 0.5, 0],
+  rayOrigin: [0, 0, 0],
+  rayDir: [0, 0, -1],
+  beddingSparkTimer: 0
+};
+
+function screenToRay(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2;
+  const pNear = unproject(ndcX, ndcY, -1);
+  const pFar  = unproject(ndcX, ndcY, 1);
+  const dx = pFar[0] - pNear[0], dy = pFar[1] - pNear[1], dz = pFar[2] - pNear[2];
+  const len = Math.hypot(dx, dy, dz) || 1;
+  return { o: pNear, d: [dx/len, dy/len, dz/len] };
+}
+function unproject(nx, ny, nz) {
+  const m = world.invVPMat;
+  const x = m[0]*nx + m[4]*ny + m[8]*nz + m[12];
+  const y = m[1]*nx + m[5]*ny + m[9]*nz + m[13];
+  const z = m[2]*nx + m[6]*ny + m[10]*nz + m[14];
+  const w = m[3]*nx + m[7]*ny + m[11]*nz + m[15];
+  return [x/w, y/w, z/w];
+}
+function raySphereDist(o, d, cx, cy, cz, r) {
+  const ox = o[0] - cx, oy = o[1] - cy, oz = o[2] - cz;
+  const b = ox*d[0] + oy*d[1] + oz*d[2];
+  const c = ox*ox + oy*oy + oz*oz - r*r;
+  const disc = b*b - c;
+  if (disc < 0) return -1;
+  const t = -b - Math.sqrt(disc);
+  return t > 0 ? t : -1;
+}
+function rayPlaneY(o, d, planeY) {
+  if (Math.abs(d[1]) < 1e-4) return null;
+  const t = (planeY - o[1]) / d[1];
+  if (t < 0) return null;
+  return [o[0] + d[0]*t, planeY, o[2] + d[2]*t];
+}
+
+function pourFromJar(count = 5) {
+  world.jarTiltAnim = 1.0;
+  sfx.playWheatRustle(1.1);
+  for (let i = 0; i < count; i++) {
+    setTimeout(() => {
+      const targetX = BOWL_POS.x + randRange(-0.18, 0.18);
+      const targetZ = BOWL_POS.z + randRange(-0.18, 0.18);
+      const sx = JAR_POS.x - 0.18;
+      const sy = JAR_POS.y + 0.68;
+      const sz = JAR_POS.z - 0.08;
+      const flight = 0.48 + i * 0.03;
+      const vx = (targetX - sx) / flight;
+      const vz = (targetZ - sz) / flight;
+      const vy = 1.65 + randRange(-0.15, 0.25);
+      const kind = (Math.random() < 0.14) ? 'sunflower' : 'wheat';
+      spawnGrain(sx, sy, sz, vx, vy, vz, kind, false);
+      sfx.playGrainClink(true);
+    }, i * 65);
+  }
+}
+
+function handlePointerDown(e) {
+  sfx.unlock();
+  canvas.setPointerCapture?.(e.pointerId);
+  input.down = true;
+  input.pointerId = e.pointerId;
+  input.startX = input.prevX = input.x = e.clientX;
+  input.startY = input.prevY = input.y = e.clientY;
+  input.movedDist = 0;
+  input.mode = 'none';
+  input.activeStalk = null;
+
+  const ray = screenToRay(e.clientX, e.clientY);
+  input.rayOrigin = ray.o;
+  input.rayDir = ray.d;
+
+  // 1. Check Wheat Stalks (generous hit around basket & stalk heads!)
+  let bestStalk = null, bestT = 999;
+  for (const st of wheatStalks) {
+    if (st.state === 'regrowing' || st.remaining <= 0) continue;
+    const hp = getStalkHeadWorldPos(st);
+    const t1 = raySphereDist(ray.o, ray.d, hp[0], hp[1], hp[2], 0.36);
+    const t2 = raySphereDist(ray.o, ray.d, (st.x + hp[0])*0.5, (st.y + hp[1])*0.5, (st.z + hp[2])*0.5, 0.34);
+    const t = (t1 > 0 && t2 > 0) ? Math.min(t1, t2) : Math.max(t1, t2);
+    if (t > 0 && t < bestT) { bestT = t; bestStalk = st; }
+  }
+  // Also allow tapping anywhere on the basket itself to grab a lush stalk!
+  if (!bestStalk) {
+    const tb = raySphereDist(ray.o, ray.d, BASKET_POS.x, BASKET_POS.y + 0.42, BASKET_POS.z, 0.56);
+    if (tb > 0) {
+      bestStalk = wheatStalks.find(s => s.state === 'basket' && s.remaining > 0);
+    }
+  }
+  if (bestStalk) {
+    input.mode = 'stalk';
+    input.activeStalk = bestStalk;
+    bestStalk.state = 'dragged';
+    canvas.classList.add('dragging');
+    sfx.playWheatRustle(1.0);
+    const p = rayPlaneY(ray.o, ray.d, 0.62);
+    if (p) input.worldHover = p;
+    return;
+  }
+
+  // 2. Check Hamster (petting / cheek-squish / wake!)
+  const hamT = raySphereDist(ray.o, ray.d, ham.x, ham.y + 0.28, ham.z, 0.48);
+  if (hamT > 0 && !ham.inHouse) {
+    input.mode = 'pet';
+    ham.petRubAccum = 0;
+    canvas.classList.add('dragging');
+    // Immediate cute acknowledgment
+    if (ham.state === 'sleep') {
+      setHamState('stretch', 2.0);
+      sfx.playSqueak(true);
+    } else if (totalCheekFill() > 0.25) {
+      // Determine left or right cheek poke
+      const hitPt = [ray.o[0]+ray.d[0]*hamT, ray.o[1]+ray.d[1]*hamT, ray.o[2]+ray.d[2]*hamT];
+      const rx = Math.cos(ham.rotY), rz = -Math.sin(ham.rotY);
+      const side = ((hitPt[0]-ham.x)*rx + (hitPt[2]-ham.z)*rz) >= 0 ? 1 : -1;
+      pokeHamsterCheek(side);
+    } else {
+      ham.hopVY = Math.max(ham.hopVY, 1.35);
+      ham.earPerk = 1.0;
+      sfx.playSqueak(true);
+      spawnSparkle(ham.x, ham.y + 0.44, ham.z, [1.0, 0.88, 0.65], 4);
+    }
+    return;
+  }
+
+  // 3. Check Warm Desk Lamp
+  const lampT = raySphereDist(ray.o, ray.d, LAMP_POS.x, LAMP_POS.y + 0.92, LAMP_POS.z, 0.68);
+  if (lampT > 0) {
+    world.lampOn = !world.lampOn;
+    world.lampPullAnim = 1.0;
+    sfx.playLampClick(world.lampOn);
+    if (world.lampOn) {
+      spawnSparkle(LAMP_POS.x, LAMP_POS.y + 1.05, LAMP_POS.z, [1.0, 0.84, 0.42], 6);
+    }
+    return;
+  }
+
+  // 4. Check Corked Glass Wheat Jar
+  const jarT = raySphereDist(ray.o, ray.d, JAR_POS.x, JAR_POS.y + 0.34, JAR_POS.z, 0.42);
+  if (jarT > 0) {
+    input.mode = 'jar';
+    pourFromJar(5);
+    return;
+  }
+
+  // 5. Check Wooden Exercise Wheel
+  const wheelT = raySphereDist(ray.o, ray.d, WHEEL_POS.x, WHEEL_POS.y + 0.72, WHEEL_POS.z, 0.72);
+  if (wheelT > 0) {
+    input.mode = 'wheel';
+    world.wheelVel += 5.5;
+    sfx.playWheelTick(6);
+    if (ham.state !== 'wheel' && ham.state !== 'eat_stalk' && ham.state !== 'unpack') {
+      ham.targetX = WHEEL_POS.x - 0.16;
+      ham.targetZ = WHEEL_POS.z + 0.34;
+      ham.nextAction = 'wheel';
+      setHamState('walk', 4.5);
+    }
+    return;
+  }
+
+  // 6. Check Wooden House (gentle knock -> peek-a-boo or unpack!)
+  const houseT = raySphereDist(ray.o, ray.d, HOUSE_POS.x, HOUSE_POS.y + 0.44, HOUSE_POS.z, 0.68);
+  if (houseT > 0) {
+    world.houseKnockAnim = 1.0;
+    sfx.playWoodKnock();
+    if (ham.state === 'house_peek' || ham.inHouse) {
+      ham.peekAmt = 1.0;
+      ham.stateTime = Math.max(ham.stateTime, ham.stateDur - 0.6);
+      sfx.playSqueak(true);
+    } else if (ham.storedGrains.length >= 2) {
+      ham.targetX = NEST_POS.x;
+      ham.targetZ = NEST_POS.z + 0.10;
+      ham.nextAction = 'unpack';
+      setHamState('walk', 4.5);
+    } else {
+      ham.targetX = NEST_POS.x;
+      ham.targetZ = NEST_POS.z;
+      ham.nextAction = 'house_peek';
+      setHamState('walk', 4.5);
+    }
+    return;
+  }
+
+  // 7. Check Stoneware Water Dish
+  const waterT = raySphereDist(ray.o, ray.d, WATER_POS.x, WATER_POS.y + 0.12, WATER_POS.z, 0.36);
+  if (waterT > 0) {
+    world.waterRippleAge = 0;
+    sfx.playWaterPlip();
+    spawnSparkle(WATER_POS.x, WATER_POS.y + 0.22, WATER_POS.z, [0.78, 0.92, 1.0], 4);
+    if (ham.state === 'idle' || ham.state === 'walk') {
+      ham.targetX = WATER_POS.x - 0.34;
+      ham.targetZ = WATER_POS.z + 0.16;
+      ham.nextAction = 'drink';
+      setHamState('walk', 4.5);
+    }
+    return;
+  }
+
+  // 8. Check Ceramic Bowl (jiggle grains inside or attract hamster!)
+  const bowlT = raySphereDist(ray.o, ray.d, BOWL_POS.x, BOWL_POS.y + 0.14, BOWL_POS.z, 0.46);
+  if (bowlT > 0) {
+    let bounced = 0;
+    for (const g of grains) {
+      if (g.inBowl) {
+        g.vy = randRange(0.75, 1.35);
+        g.vx = randRange(-0.25, 0.25);
+        g.vz = randRange(-0.25, 0.25);
+        g.settled = false;
+        bounced++;
+      }
+    }
+    sfx.playGrainClink(true);
+    if (bounced === 0) {
+      // Friendly gift: tapping an empty bowl shakes 2 stray golden grains from the jar over!
+      pourFromJar(3);
+    } else if (ham.state === 'idle' || ham.state === 'groom' || ham.state === 'sleep') {
+      chooseNextHamsterBehavior();
+    }
+    return;
+  }
+
+  // 8b. Check Birch Arch Bridge (tap to coax hamster to hop up and look around!)
+  const bridgeT = raySphereDist(ray.o, ray.d, BRIDGE_POS.x, BRIDGE_POS.y + 0.24, BRIDGE_POS.z, 0.48);
+  if (bridgeT > 0) {
+    sfx.playWoodKnock();
+    if (ham.state !== 'eat_stalk' && ham.state !== 'unpack' && ham.state !== 'petted') {
+      ham.targetX = BRIDGE_POS.x;
+      ham.targetZ = BRIDGE_POS.z;
+      ham.nextAction = 'bridge_perch';
+      setHamState('walk', 4.2);
+    }
+    return;
+  }
+
+  // 9. Check Twilight Window (upper back region)
+  if (ray.d[2] < -0.15) {
+    const tWin = (-3.25 - ray.o[2]) / ray.d[2];
+    if (tWin > 0) {
+      const wx = ray.o[0] + ray.d[0]*tWin;
+      const wy = ray.o[1] + ray.d[1]*tWin;
+      if (wx > -2.5 && wx < 2.3 && wy > 0.8 && wy < 4.2) {
+        world.skyTargetBoost += 0.22;
+        world.breezeAnim = 1.0;
+        sfx.playBreezeChime();
+        for (let i = 0; i < 6; i++) {
+          spawnSparkle(randRange(-1.8, 1.8), randRange(1.2, 2.4), randRange(-1.4, 0.5), [1.0, 0.88, 0.62], 2);
+        }
+        return;
+      }
+    }
+  }
+
+  // 10. Bedding Floor Tap & Drag!
+  const floorPt = rayPlaneY(ray.o, ray.d, 0.10);
+  if (floorPt && Math.abs(floorPt[0]) < 2.5 && floorPt[2] > -1.72 && floorPt[2] < 1.68) {
+    input.mode = 'bedding';
+    input.worldHover = floorPt;
+    disturbBedding(floorPt[0], floorPt[2], 0.42, 1.05, false);
+    // Call hamster curiously over to investigate!
+    if (ham.state !== 'eat_stalk' && ham.state !== 'unpack' && ham.state !== 'petted') {
+      const p = avoidObstacles(floorPt[0], floorPt[2]);
+      ham.targetX = p[0]; ham.targetZ = p[1];
+      ham.nextAction = 'dig';
+      setHamState('walk', 4.0);
+    }
+  }
+}
+
+function handlePointerMove(e) {
+  const ray = screenToRay(e.clientX, e.clientY);
+  input.rayOrigin = ray.o;
+  input.rayDir = ray.d;
+
+  if (!input.down || e.pointerId !== input.pointerId) return;
+  const dx = e.clientX - input.prevX;
+  const dy = e.clientY - input.prevY;
+  const step = Math.hypot(dx, dy);
+  input.movedDist += step;
+  input.prevX = input.x = e.clientX;
+  input.prevY = input.y = e.clientY;
+
+  if (input.mode === 'stalk' && input.activeStalk) {
+    const p = rayPlaneY(ray.o, ray.d, 0.62);
+    if (p) {
+      const prevH = input.worldHover;
+      const moveD = Math.hypot(p[0] - prevH[0], p[2] - prevH[2]);
+      input.worldHover = [clamp(p[0], -2.6, 2.4), 0.62, clamp(p[2], -1.6, 1.75)];
+      const st = input.activeStalk;
+      st.bendVX += clamp((p[0] - prevH[0]) * 4.5, -1.8, 1.8);
+      st.bendVZ += clamp((p[2] - prevH[2]) * 4.5, -1.8, 1.8);
+
+      // Shaking the stalk vigorously OR rubbing over the ceramic bowl sheds golden grains!
+      const overBowl = Math.hypot(p[0] - BOWL_POS.x, p[2] - BOWL_POS.z) < 0.56;
+      st.shakeAccum += moveD * (overBowl ? 2.4 : 1.15);
+      if (moveD > 0.08) sfx.playWheatRustle(moveD * 4.0);
+      if (st.shakeAccum > 0.72 && st.remaining > 0) {
+        st.shakeAccum = 0;
+        const hp = popKernelFromStalk(st, true, overBowl ? [
+          (BOWL_POS.x - p[0]) * 1.4 + randRange(-0.18, 0.18),
+          0.35,
+          (BOWL_POS.z - p[2]) * 1.4 + randRange(-0.18, 0.18)
+        ] : null);
+        if (hp) sfx.playWheatRustle(1.1);
+      }
+    }
+  } else if (input.mode === 'pet') {
+    // Gentle stroking back and forth melts the hamster into a happy mochi loaf!
+    ham.petRubAccum += step;
+    if (ham.petRubAccum > 14 && !ham.inHouse) {
+      if (ham.state !== 'petted') {
+        setHamState('petted', 1.6);
+      } else {
+        ham.stateTime = 0;
+      }
+      ham.petDecay = 0.65;
+      ham.happyEyes = 1.0;
+      ham.headRoll = clamp(dx * 0.015, -0.25, 0.25);
+      if (ham.purrTimer <= 0) {
+        ham.purrTimer = 0.16;
+        sfx.playPurr();
+        spawnSparkle(ham.x, ham.y + 0.34, ham.z, [1.0, 0.85, 0.72], 2);
+      }
+    }
+  } else if (input.mode === 'wheel') {
+    world.wheelVel = clamp(world.wheelVel - dy * 0.12 + dx * 0.06, -12, 12);
+    sfx.playWheelTick(world.wheelVel);
+  } else if (input.mode === 'bedding') {
+    const p = rayPlaneY(ray.o, ray.d, 0.10);
+    if (p && Math.abs(p[0]) < 2.42 && p[2] > -1.62 && p[2] < 1.58) {
+      const dist = Math.hypot(p[0] - input.worldHover[0], p[2] - input.worldHover[2]);
+      if (dist > 0.09) {
+        input.worldHover = p;
+        disturbBedding(p[0], p[2], 0.44, 1.35, true);
+      }
+    }
+  }
+}
+
+function handlePointerUp(e) {
+  if (!input.down || e.pointerId !== input.pointerId) return;
+  canvas.classList.remove('dragging');
+  if (input.mode === 'stalk' && input.activeStalk) {
+    const st = input.activeStalk;
+    if (input.movedDist < 18) {
+      // Quick tap on a wheat stalk in basket: shake 3 grains cheerfully into the enclosure!
+      for (let i = 0; i < 3; i++) {
+        popKernelFromStalk(st, true, [
+          randRange(0.7, 1.65),
+          randRange(1.2, 1.85),
+          randRange(-0.8, 0.4)
+        ]);
+      }
+      // Return gently to basket if still plenty of kernels
+      if (st.remaining > 2) {
+        st.state = 'basket';
+        st.x = st.baseX; st.y = st.baseY; st.z = st.baseZ;
+      } else {
+        const slot = st.slotIndex;
+        st.state = 'dropped';
+        st.x = clamp(BASKET_POS.x + 0.55, -2.0, 1.75);
+        st.z = clamp(BASKET_POS.z - 0.15, -1.2, 1.25);
+        st.y = beddingHeight(st.x, st.z) + 0.04;
+        setTimeout(() => regrowStalkInSlot(slot), 900);
+      }
+    } else {
+      // Dropped in the habitat!
+      const overBasket = Math.hypot(st.x - BASKET_POS.x, st.z - BASKET_POS.z) < 0.52;
+      if (overBasket && st.remaining > 2) {
+        st.state = 'basket';
+        st.x = st.baseX; st.y = st.baseY; st.z = st.baseZ;
+      } else {
+        const slot = st.slotIndex;
+        st.state = 'dropped';
+        st.x = clamp(st.x, -2.0, 1.75);
+        st.z = clamp(st.z, -1.2, 1.25);
+        st.y = beddingHeight(st.x, st.z) + 0.04;
+        st.dropRotY = randRange(0, TAU);
+        setTimeout(() => regrowStalkInSlot(slot), 900);
+        // Keep max 2 dropped stalks so floor stays neat
+        const dropped = wheatStalks.filter(s => s.state === 'dropped');
+        if (dropped.length > 2) {
+          const idx = wheatStalks.indexOf(dropped[0]);
+          if (idx >= 0) wheatStalks.splice(idx, 1);
+        }
+      }
+    }
+    input.activeStalk = null;
+  } else if (input.mode === 'pet') {
+    if (ham.state === 'petted') {
+      // After a cozy pet, follow up with adorable face-washing!
+      setHamState('groom', 2.4);
+    }
+  }
+  input.down = false;
+  input.mode = 'none';
+}
+
+canvas.addEventListener('pointerdown', handlePointerDown);
+window.addEventListener('pointermove', handlePointerMove);
+window.addEventListener('pointerup', handlePointerUp);
+window.addEventListener('pointercancel', handlePointerUp);
+
+// ============================================================================
+// 10. SIMULATION UPDATE LOOP (ATMOSPHERE, PHYSICS, HAMSTER AI & ANIMATION)
+// ============================================================================
+function updateAtmosphere(dt) {
+  // Gentle 3.5-minute golden hour -> rose sunset -> starry twilight -> golden dawn cycle
+  // Plus smooth user tap boosts on the window!
+  world.skyPhase = (world.skyPhase + dt * 0.0042) % 1.0;
+  if (world.skyTargetBoost > 0.001) {
+    const step = Math.min(world.skyTargetBoost, dt * 0.42);
+    world.skyPhase = (world.skyPhase + step) % 1.0;
+    world.skyTargetBoost -= step;
+  }
+  // Map phase into continuous dusk intensity (0 = golden afternoon, 0.5 = coral sunset, 1.0 = starry indigo twilight)
+  // Smooth triangle wave with cozy long golden/twilight plateaus
+  const dusk = 0.5 - 0.5 * Math.cos(world.skyPhase * TAU);
+  world.dusk = dusk;
+
+  // Sun direction gently lowers as dusk deepens
+  const sunElev = lerp(0.76, 0.24, dusk);
+  const sLen = Math.hypot(-0.66, sunElev, 0.30);
+  world.sunDir = [-0.66 / sLen, sunElev / sLen, 0.30 / sLen];
+
+  // Rich sunset lighting color progression
+  // Stage A (dusk 0): warm honey gold
+  // Stage B (dusk 0.5): rosy apricot-coral sunset
+  // Stage C (dusk 1.0): soft dreamy lavender-blue moonlight from window + warm cozy lamp!
+  const t1 = clamp(dusk * 2.0, 0, 1);
+  const t2 = clamp((dusk - 0.5) * 2.0, 0, 1);
+
+  const mix3 = (a, b, t) => [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a[2],b[2],t)];
+
+  world.sunColor = dusk < 0.5
+    ? mix3([1.35, 1.04, 0.68], [1.28, 0.68, 0.40], t1)
+    : mix3([1.28, 0.68, 0.40], [0.44, 0.46, 0.72], t2);
+
+  world.rimColor = dusk < 0.5
+    ? mix3([1.10, 0.74, 0.42], [1.18, 0.54, 0.38], t1)
+    : mix3([1.18, 0.54, 0.38], [0.42, 0.48, 0.85], t2);
+
+  world.skyColor = dusk < 0.5
+    ? mix3([0.46, 0.42, 0.56], [0.42, 0.32, 0.46], t1)
+    : mix3([0.42, 0.32, 0.46], [0.22, 0.24, 0.42], t2);
+
+  world.groundColor = dusk < 0.5
+    ? mix3([0.42, 0.29, 0.20], [0.36, 0.22, 0.16], t1)
+    : mix3([0.36, 0.22, 0.16], [0.22, 0.16, 0.14], t2);
+
+  world.skyZenith = dusk < 0.5
+    ? mix3([0.28, 0.42, 0.72], [0.24, 0.22, 0.48], t1)
+    : mix3([0.24, 0.22, 0.48], [0.06, 0.08, 0.22], t2);
+
+  world.skyMid = dusk < 0.5
+    ? mix3([0.82, 0.56, 0.46], [0.76, 0.36, 0.44], t1)
+    : mix3([0.76, 0.36, 0.44], [0.18, 0.16, 0.36], t2);
+
+  world.skyHorizon = dusk < 0.5
+    ? mix3([1.10, 0.78, 0.44], [1.05, 0.52, 0.32], t1)
+    : mix3([1.05, 0.52, 0.32], [0.34, 0.24, 0.40], t2);
+
+  // Warm bedside lamp glow (brightens slightly in twilight for cozy contrast!)
+  const targetLamp = world.lampOn ? lerp(0.85, 1.35, dusk) : 0.0;
+  world.lampGlow = damp(world.lampGlow, targetLamp, 8, dt);
+  world.lampColor = [1.85 * world.lampGlow, 1.18 * world.lampGlow, 0.56 * world.lampGlow];
+
+  // Prop micro-animations
+  world.lampPullAnim = Math.max(0, world.lampPullAnim - dt * 2.2);
+  world.houseKnockAnim = Math.max(0, world.houseKnockAnim - dt * 2.8);
+  world.jarTiltAnim = Math.max(0, world.jarTiltAnim - dt * 1.9);
+  world.breezeAnim = Math.max(0, world.breezeAnim - dt * 0.7);
+  world.waterRippleAge += dt;
+
+  // Exercise wheel physics
+  world.wheelAngle += world.wheelVel * dt;
+  world.wheelVel *= Math.exp(-1.15 * dt);
+  if (Math.abs(world.wheelVel) < 0.02) world.wheelVel = 0;
+}
+
+function updateShavingsAndGrains(dt) {
+  // Update disturbed wood shavings
+  for (let i = 0; i < shavings.length; i++) {
+    const s = shavings[i];
+    const groundY = beddingHeight(s.x, s.z) + 0.012;
+    if (s.y > groundY + 0.002 || Math.abs(s.vy) > 0.01 || Math.abs(s.vx) > 0.01 || Math.abs(s.vz) > 0.01) {
+      s.vy -= 6.8 * dt;
+      s.x = clamp(s.x + s.vx * dt, -2.42, 2.42);
+      s.z = clamp(s.z + s.vz * dt, -1.62, 1.58);
+      s.y += s.vy * dt;
+      s.ry += s.vrot * dt;
+      s.rx += s.vrot * 0.4 * dt;
+      const gy = beddingHeight(s.x, s.z) + 0.012;
+      if (s.y <= gy) {
+        s.y = gy;
+        s.vy = -s.vy * 0.22;
+        if (Math.abs(s.vy) < 0.08) s.vy = 0;
+        s.vx *= 0.65; s.vz *= 0.65; s.vrot *= 0.65;
+        s.rx = damp(s.rx, 0, 12, dt);
+      }
+    }
+  }
+
+  // Update loose grains & hoard grains
+  for (let i = 0; i < grains.length; i++) {
+    const g = grains[i];
+    g.age += dt;
+    if (g.settled) continue;
+    g.vy -= 7.8 * dt;
+    g.x += g.vx * dt;
+    g.y += g.vy * dt;
+    g.z += g.vz * dt;
+    g.rx += g.vx * 4.0 * dt;
+    g.rz += g.vz * 4.0 * dt;
+
+    // Keep inside habitat walls
+    if (g.x < -2.35) { g.x = -2.35; g.vx = Math.abs(g.vx) * 0.4; }
+    if (g.x >  2.35) { g.x =  2.35; g.vx = -Math.abs(g.vx) * 0.4; }
+    if (g.z < -1.55) { g.z = -1.55; g.vz = Math.abs(g.vz) * 0.4; }
+    if (g.z >  1.52) { g.z =  1.52; g.vz = -Math.abs(g.vz) * 0.4; }
+
+    // Check Ceramic Bowl containment!
+    const db = Math.hypot(g.x - BOWL_POS.x, g.z - BOWL_POS.z);
+    let floorY = beddingHeight(g.x, g.z) + 0.025;
+    let landedInBowl = false;
+    if (db < 0.34 && g.y >= BOWL_POS.y + 0.04) {
+      floorY = BOWL_POS.y + 0.085 + db * 0.14;
+      landedInBowl = true;
+      // Gentle pull inward toward bowl center so grains gather naturally
+      g.vx -= (g.x - BOWL_POS.x) * 1.8 * dt;
+      g.vz -= (g.z - BOWL_POS.z) * 1.8 * dt;
+    } else if (g.isHoard) {
+      // Pile slightly higher in the nest hoard as it grows!
+      const dn = Math.hypot(g.x - NEST_POS.x, g.z - NEST_POS.z);
+      floorY += Math.max(0, 0.09 - dn * 0.25) * clamp(world.hoardCount / 22, 0, 1);
+    }
+
+    if (g.y <= floorY) {
+      const impact = Math.abs(g.vy);
+      g.y = floorY;
+      g.inBowl = landedInBowl;
+      if (impact > 0.65) {
+        sfx.playGrainClink(landedInBowl);
+        g.vy = impact * (landedInBowl ? 0.34 : 0.22);
+        g.vx *= 0.62; g.vz *= 0.62;
+      } else {
+        g.vy = 0; g.vx *= 0.5; g.vz *= 0.5;
+        if (Math.hypot(g.vx, g.vz) < 0.04) {
+          g.vx = g.vz = 0;
+          g.settled = true;
+        }
+      }
+    }
+  }
+
+  // Update Wheat Stalks (spring bend, sway, regrow, dragged follow)
+  for (let i = wheatStalks.length - 1; i >= 0; i--) {
+    const st = wheatStalks[i];
+    if (st.state === 'regrowing') {
+      st.growScale = damp(st.growScale, 1.0, 4.5, dt);
+      if (st.growScale > 0.985) {
+        st.growScale = 1.0;
+        st.state = 'basket';
+      }
+    } else if (st.state === 'dragged') {
+      // Smoothly position stem so its golden wheat head hovers near pointer!
+      const targetX = input.worldHover[0] - st.leanX * st.length * 0.55;
+      const targetY = input.worldHover[1] - st.length * 0.72;
+      const targetZ = input.worldHover[2] - st.leanZ * st.length * 0.55;
+      st.x = damp(st.x, targetX, 18, dt);
+      st.y = damp(st.y, targetY, 18, dt);
+      st.z = damp(st.z, targetZ, 18, dt);
+    } else if (st.state === 'dropped' && st.remaining <= 0) {
+      st.growScale = damp(st.growScale, 0, 3.0, dt);
+      if (st.growScale < 0.05) { wheatStalks.splice(i, 1); continue; }
+    }
+
+    // Spring-damper bend + gentle twilight breeze sway
+    const breeze = (0.04 + world.breezeAnim * 0.14) * Math.sin(world.time * 1.8 + st.slotIndex * 1.1);
+    const fx = (breeze - st.bendX) * 28.0 - st.bendVX * 5.2;
+    const fz = (breeze * 0.6 - st.bendZ) * 28.0 - st.bendVZ * 5.2;
+    st.bendVX += fx * dt;
+    st.bendVZ += fz * dt;
+    st.bendX = clamp(st.bendX + st.bendVX * dt, -0.55, 0.55);
+    st.bendZ = clamp(st.bendZ + st.bendVZ * dt, -0.55, 0.55);
+  }
+
+  // Update Sparkles
+  for (let i = sparkles.length - 1; i >= 0; i--) {
+    const sp = sparkles[i];
+    sp.life += dt;
+    if (sp.life >= sp.maxLife) { sparkles.splice(i, 1); continue; }
+    sp.x += sp.vx * dt;
+    sp.y += sp.vy * dt;
+    sp.z += sp.vz * dt;
+    sp.vy *= 0.96;
+  }
+}
+
+function updateHamster(dt) {
+  ham.stateTime += dt;
+  ham.purrTimer = Math.max(0, ham.purrTimer - dt);
+
+  // Cheek spring-damper physics (bouncy chubby jiggle!)
+  const kSpring = 64.0, kDamp = 7.2;
+  ham.cheekVelL += (-ham.cheekSpringL * kSpring - ham.cheekVelL * kDamp) * dt;
+  ham.cheekSpringL += ham.cheekVelL * dt;
+  ham.cheekVelR += (-ham.cheekSpringR * kSpring - ham.cheekVelR * kDamp) * dt;
+  ham.cheekSpringR += ham.cheekVelR * dt;
+
+  // Natural blinking
+  ham.blinkTimer -= dt;
+  if (ham.blinkTimer <= 0) {
+    ham.blinkTimer = randRange(2.4, 5.2);
+  }
+  const naturalBlink = (ham.blinkTimer < 0.14) ? Math.sin((ham.blinkTimer / 0.14) * PI) : 0;
+
+  // Hop physics
+  if (ham.hopY > 0 || ham.hopVY !== 0) {
+    ham.hopVY -= 9.5 * dt;
+    ham.hopY += ham.hopVY * dt;
+    if (ham.hopY <= 0) { ham.hopY = 0; ham.hopVY = 0; }
+  }
+
+  // Check if player is currently holding a wheat stalk near the hamster!
+  const draggedStalk = (input.mode === 'stalk' && input.activeStalk && input.activeStalk.remaining > 0) ? input.activeStalk : null;
+  let stalkHead = null, stalkDist = 999;
+  if (draggedStalk) {
+    stalkHead = getStalkHeadWorldPos(draggedStalk);
+    stalkDist = Math.hypot(stalkHead[0] - ham.x, stalkHead[2] - ham.z);
+    // Wake up immediately if wheat is waved nearby!
+    if (ham.state === 'sleep' && stalkDist < 2.2) {
+      setHamState('idle', 0.4);
+      sfx.playSqueak(true);
+    }
+    if (ham.state !== 'petted' && ham.state !== 'unpack' && ham.state !== 'house_peek') {
+      if (stalkDist < 0.92 && totalCheekFill() < 0.98) {
+        if (ham.state !== 'eat_stalk') {
+          setHamState('eat_stalk', 99);
+          ham.eatActionTimer = 0.22;
+          sfx.playSqueak(true);
+        }
+      } else if (stalkDist < 2.6 && ham.state !== 'eat_stalk') {
+        // Eagerly trot toward the held wheat stalk!
+        const p = avoidObstacles(stalkHead[0], stalkHead[2]);
+        ham.targetX = p[0]; ham.targetZ = p[1];
+        if (ham.state !== 'walk' && ham.state !== 'beg') {
+          ham.nextAction = 'beg';
+          setHamState('walk', 4.0);
+        }
+      }
+    }
+  } else if (ham.state === 'eat_stalk') {
+    // Player released the stalk!
+    setHamState('idle', 1.0);
+  }
+
+  // State machine execution
+  let wantStand = 0, wantLoaf = 0, wantSleep = 0, wantStretch = 0;
+  let wantHappy = 0, wantEar = 0.65, wantYaw = 0, wantPitch = 0, wantRoll = 0;
+  let wantMouth = 0, wantNose = 0.25;
+  ham.speed = 0;
+
+  switch (ham.state) {
+    case 'idle': {
+      wantEar = 0.72 + 0.15 * Math.sin(world.time * 1.9);
+      wantYaw = Math.sin(world.time * 1.3) * 0.28;
+      wantPitch = 0.05 + 0.06 * Math.sin(world.time * 2.1);
+      wantNose = 0.45;
+      // Cute occasional mini-stand sniff
+      if (ham.stateTime > 0.7 && ham.stateTime < 1.55) {
+        wantStand = 0.78;
+        wantPitch = 0.22;
+        wantNose = 0.95;
+      }
+      if (ham.stateTime >= ham.stateDur) {
+        chooseNextHamsterBehavior();
+      }
+      break;
+    }
+
+    case 'walk': {
+      // Continuously track dragged wheat if walking to it
+      if (draggedStalk && stalkHead) {
+        const p = avoidObstacles(stalkHead[0], stalkHead[2]);
+        ham.targetX = p[0]; ham.targetZ = p[1];
+      }
+      const dx = ham.targetX - ham.x;
+      const dz = ham.targetZ - ham.z;
+      const dist = Math.hypot(dx, dz);
+      const arrival = (ham.nextAction === 'eat_ground' || ham.nextAction === 'eat_dropped') ? 0.26 : 0.16;
+
+      if (dist <= arrival || ham.stateTime > ham.stateDur) {
+        const act = ham.nextAction || 'idle';
+        ham.nextAction = null;
+        if (act === 'eat_ground' && ham.targetGrain && grains.includes(ham.targetGrain)) {
+          setHamState('eat_ground', 2.0);
+          ham.eatActionTimer = 0.18;
+        } else if (act === 'eat_dropped' && ham.targetStalk && ham.targetStalk.remaining > 0) {
+          setHamState('eat_ground', 2.4);
+          ham.eatActionTimer = 0.18;
+        } else if (act === 'unpack') {
+          setHamState('unpack', 3.4);
+          ham.eatActionTimer = 0.42;
+        } else if (act === 'wheel') {
+          setHamState('wheel', randRange(3.2, 5.2));
+        } else if (act === 'dig') {
+          setHamState('dig', randRange(1.8, 2.8));
+        } else if (act === 'drink') {
+          setHamState('drink', randRange(2.2, 3.2));
+        } else if (act === 'house_peek') {
+          setHamState('house_peek', randRange(3.6, 5.0));
+        } else if (act === 'bridge_perch') {
+          ham.hopVY = 1.65;
+          sfx.playSqueak(true);
+          setHamState('bridge_perch', randRange(2.8, 4.0));
+        } else if (act === 'sleep') {
+          setHamState('sleep', randRange(6.5, 11.0));
+        } else if (act === 'beg') {
+          setHamState('beg', 2.0);
+        } else {
+          setHamState('idle', randRange(1.5, 2.6));
+        }
+      } else {
+        const desiredRot = Math.atan2(dx, dz);
+        ham.rotY = dampAngle(ham.rotY, desiredRot, 10.5, dt);
+        // Chubby-cheek waddle is slightly slower and extra bouncy!
+        const chub = totalCheekFill();
+        const spd = lerp(1.18, 0.84, chub);
+        const step = Math.min(dist, spd * dt);
+        ham.x += (dx / dist) * step;
+        ham.z += (dz / dist) * step;
+        ham.speed = spd;
+        ham.walkPhase += dt * (11.5 + chub * 2.0);
+        // Cute chubby cheek sympathetic bounce while trotting!
+        const jiggle = Math.sin(ham.walkPhase) * chub * 1.4;
+        ham.cheekVelL += jiggle * dt * 16;
+        ham.cheekVelR -= jiggle * dt * 16;
+        wantEar = 0.85;
+        wantNose = 0.65;
+        wantRoll = Math.sin(ham.walkPhase) * (0.04 + chub * 0.08);
+      }
+      break;
+    }
+
+    case 'beg': {
+      wantStand = 1.0;
+      wantEar = 1.0;
+      wantPitch = 0.34;
+      wantNose = 1.0;
+      if (stalkHead) {
+        const a = Math.atan2(stalkHead[0] - ham.x, stalkHead[2] - ham.z);
+        ham.rotY = dampAngle(ham.rotY, a, 12, dt);
+      }
+      if (!draggedStalk || ham.stateTime > ham.stateDur) {
+        setHamState('idle', 1.2);
+      }
+      break;
+    }
+
+    case 'eat_stalk': {
+      // Standing adorably upright, grabbing the dragged wheat ear & stuffing cheeks!
+      wantStand = 1.0;
+      wantEar = 0.92;
+      wantHappy = 0.65;
+      wantNose = 0.9;
+      if (stalkHead && draggedStalk) {
+        const a = Math.atan2(stalkHead[0] - ham.x, stalkHead[2] - ham.z);
+        ham.rotY = dampAngle(ham.rotY, a, 14, dt);
+        // Keep close to stalk if player pulls slightly
+        if (stalkDist > 0.42 && stalkDist < 1.15) {
+          const pull = (stalkDist - 0.38) * 3.0 * dt;
+          ham.x += ((stalkHead[0] - ham.x) / stalkDist) * pull;
+          ham.z += ((stalkHead[2] - ham.z) / stalkDist) * pull;
+          ham.walkPhase += dt * 10;
+        }
+        wantPitch = clamp((stalkHead[1] - (ham.y + 0.46)) * 1.2, -0.15, 0.45);
+        ham.nibblePhase += dt * 20;
+        wantMouth = 0.4 + 0.35 * Math.sin(ham.nibblePhase);
+
+        ham.nibbleSubTimer -= dt;
+        if (ham.nibbleSubTimer <= 0) {
+          ham.nibbleSubTimer = randRange(0.11, 0.18);
+          sfx.playNibble();
+        }
+        ham.eatActionTimer -= dt;
+        if (ham.eatActionTimer <= 0) {
+          ham.eatActionTimer = 0.46;
+          if (draggedStalk.remaining > 0 && totalCheekFill() < 0.98) {
+            popKernelFromStalk(draggedStalk, false);
+            stuffOneGrain('wheat');
+            ham.heldGrainKind = 'wheat';
+            if (totalCheekFill() >= 0.95) {
+              // Cheeks are completely full!! Do happy squeak and head to unpack!
+              sfx.playSqueak(true);
+              ham.targetX = NEST_POS.x;
+              ham.targetZ = NEST_POS.z + 0.12;
+              ham.nextAction = 'unpack';
+              setHamState('walk', 5.0);
+            }
+          } else {
+            setHamState('groom', 2.0);
+          }
+        }
+      } else {
+        setHamState('idle', 0.8);
+      }
+      break;
+    }
+
+    case 'eat_ground': {
+      // Sitting plumply on haunches, holding a grain in both tiny pink paws, nibbling & stuffing!
+      wantStand = 0.86;
+      wantEar = 0.84;
+      wantHappy = 0.72;
+      wantPitch = -0.12 + 0.06 * Math.sin(ham.nibblePhase * 0.5);
+      ham.nibblePhase += dt * 22;
+      wantMouth = 0.38 + 0.32 * Math.sin(ham.nibblePhase);
+
+      if (ham.targetGrain && grains.includes(ham.targetGrain)) {
+        const a = Math.atan2(ham.targetGrain.x - ham.x, ham.targetGrain.z - ham.z);
+        ham.rotY = dampAngle(ham.rotY, a, 12, dt);
+        ham.heldGrainKind = ham.targetGrain.kind;
+      } else if (ham.targetStalk && ham.targetStalk.remaining > 0) {
+        const hp = getStalkHeadWorldPos(ham.targetStalk);
+        const a = Math.atan2(hp[0] - ham.x, hp[2] - ham.z);
+        ham.rotY = dampAngle(ham.rotY, a, 12, dt);
+        ham.heldGrainKind = 'wheat';
+      }
+
+      ham.nibbleSubTimer -= dt;
+      if (ham.nibbleSubTimer <= 0) {
+        ham.nibbleSubTimer = randRange(0.11, 0.18);
+        sfx.playNibble();
+      }
+
+      ham.eatActionTimer -= dt;
+      if (ham.eatActionTimer <= 0) {
+        // Finish picking up and stuffing into cheek!
+        if (ham.targetGrain && grains.includes(ham.targetGrain)) {
+          const kind = ham.targetGrain.kind;
+          const idx = grains.indexOf(ham.targetGrain);
+          if (idx >= 0) grains.splice(idx, 1);
+          ham.targetGrain = null;
+          stuffOneGrain(kind);
+          if (kind === 'sunflower') {
+            ham.hopVY = 1.4;
+            sfx.playSqueak(true);
+            spawnSparkle(ham.x, ham.y + 0.45, ham.z, [1.0, 0.92, 0.48], 8);
+          }
+          // Check if another grain is right next to it (e.g. in the bowl!)
+          const nextG = findBestLooseGrain();
+          if (nextG && Math.hypot(nextG.x - ham.x, nextG.z - ham.z) < 0.55 && totalCheekFill() < 0.95) {
+            ham.targetGrain = nextG;
+            ham.eatActionTimer = 0.52;
+            ham.stateTime = 0;
+          } else {
+            ham.heldGrainKind = null;
+            setHamState('idle', 0.9);
+          }
+        } else if (ham.targetStalk && ham.targetStalk.remaining > 0 && totalCheekFill() < 0.95) {
+          popKernelFromStalk(ham.targetStalk, false);
+          stuffOneGrain('wheat');
+          ham.eatActionTimer = 0.55;
+          ham.stateTime = 0;
+        } else {
+          ham.targetStalk = null;
+          ham.heldGrainKind = null;
+          setHamState('idle', 0.9);
+        }
+      }
+      break;
+    }
+
+    case 'unpack': {
+      // THE MAGIC PAYOFF: Sitting by the wooden house nest, pushing both paws along chubby cheeks to spill a cascade of golden wheat!
+      wantStand = 0.92;
+      wantEar = 0.78;
+      wantHappy = 0.85;
+      // Face front-right so the child has a perfect view of the cheeks emptying!
+      ham.rotY = dampAngle(ham.rotY, 0.45, 7, dt);
+      ham.unpackPhase += dt * 7.8;
+      wantPitch = -0.18 + Math.sin(ham.unpackPhase) * 0.14;
+      wantMouth = 0.45 + 0.35 * Math.max(0, Math.sin(ham.unpackPhase));
+
+      ham.eatActionTimer -= dt;
+      if (ham.eatActionTimer <= 0 && ham.storedGrains.length > 0) {
+        ham.eatActionTimer = 0.24;
+        const kind = ham.storedGrains.pop();
+        if (ham.cheekFillL >= ham.cheekFillR) {
+          ham.cheekFillL = Math.max(0, ham.cheekFillL - 0.18);
+          ham.cheekVelL -= 5.8;
+        } else {
+          ham.cheekFillR = Math.max(0, ham.cheekFillR - 0.18);
+          ham.cheekVelR -= 5.8;
+        }
+        // Spit grain gracefully out in front of mouth into the nest hoard!
+        const fx = Math.sin(ham.rotY), fz = Math.cos(ham.rotY);
+        spawnGrain(
+          ham.x + fx * 0.24 + randRange(-0.05, 0.05),
+          ham.y + 0.34,
+          ham.z + fz * 0.24 + randRange(-0.05, 0.05),
+          fx * randRange(0.45, 0.95) + randRange(-0.28, 0.28),
+          randRange(0.35, 0.85),
+          fz * randRange(0.45, 0.95) + randRange(-0.28, 0.28),
+          kind,
+          true
+        );
+        world.hoardCount++;
+        sfx.playGrainClink(false);
+        spawnSparkle(ham.x + fx * 0.26, ham.y + 0.28, ham.z + fz * 0.26, [1.0, 0.88, 0.44], 3);
+      }
+
+      if (ham.storedGrains.length === 0 && ham.stateTime > 0.8) {
+        ham.cheekFillL = 0; ham.cheekFillR = 0;
+        ham.hopVY = 1.5;
+        sfx.playSqueak(true);
+        spawnSparkle(ham.x, ham.y + 0.44, ham.z, [1.0, 0.92, 0.58], 8);
+        setHamState('groom', 2.4);
+      }
+      break;
+    }
+
+    case 'petted': {
+      // Melted happy mochi loaf!
+      wantLoaf = 1.0;
+      wantEar = 0.14;
+      wantHappy = 1.0;
+      wantPitch = 0.10;
+      wantNose = 0.15;
+      ham.petDecay -= dt;
+      if (ham.petDecay <= 0 && !input.down) {
+        setHamState('groom', 2.2);
+      }
+      break;
+    }
+
+    case 'groom': {
+      // Cute face-washing (くしくし洗顔) — paws circling snout & behind ears!
+      wantStand = 0.95;
+      wantEar = 0.52 + 0.2 * Math.sin(ham.groomPhase * 2);
+      wantHappy = 0.85;
+      ham.groomPhase += dt * 11.5;
+      wantPitch = -0.14 + 0.16 * Math.sin(ham.groomPhase);
+      wantRoll = 0.12 * Math.sin(ham.groomPhase * 0.5);
+      if (ham.stateTime >= ham.stateDur) {
+        setHamState('idle', 1.4);
+      }
+      break;
+    }
+
+    case 'wheel': {
+      // Hop onto cork running track and run joyfully!
+      const wx = WHEEL_POS.x + Math.sin(WHEEL_POS.rotY) * 0.04;
+      const wz = WHEEL_POS.z + Math.cos(WHEEL_POS.rotY) * 0.04;
+      ham.x = damp(ham.x, wx, 10, dt);
+      ham.z = damp(ham.z, wz, 10, dt);
+      ham.rotY = dampAngle(ham.rotY, WHEEL_POS.rotY - PI * 0.5, 10, dt);
+      // Spin wheel enthusiastically
+      const runIntensity = smoothstep(0.0, 0.5, ham.stateTime) * smoothstep(ham.stateDur, ham.stateDur - 0.7, ham.stateTime);
+      world.wheelVel = lerp(world.wheelVel, 6.8 * runIntensity, 4.5 * dt);
+      ham.walkPhase += dt * (4.0 + Math.abs(world.wheelVel) * 2.8);
+      ham.speed = Math.abs(world.wheelVel) * 0.3;
+      if (Math.abs(world.wheelVel) > 1.2) sfx.playWheelTick(world.wheelVel);
+      // Chubby cheeks bounce hilariously while jogging!
+      const chub = totalCheekFill();
+      ham.cheekVelL += Math.sin(ham.walkPhase) * chub * 22 * dt;
+      ham.cheekVelR -= Math.sin(ham.walkPhase) * chub * 22 * dt;
+      wantEar = 0.92;
+      wantHappy = 0.45;
+      if (ham.stateTime >= ham.stateDur) {
+        // Hop gently off wheel to front-left
+        ham.targetX = WHEEL_POS.x - 0.45;
+        ham.targetZ = WHEEL_POS.z + 0.58;
+        ham.nextAction = 'idle';
+        ham.hopVY = 1.2;
+        setHamState('walk', 2.5);
+      }
+      break;
+    }
+
+    case 'bridge_perch': {
+      // Standing adorably atop the curved birch bridge surveying the twilight room!
+      ham.x = damp(ham.x, BRIDGE_POS.x, 8, dt);
+      ham.z = damp(ham.z, BRIDGE_POS.z, 8, dt);
+      ham.rotY = dampAngle(ham.rotY, 0.15 + Math.sin(world.time * 1.4) * 0.35, 6, dt);
+      wantStand = 0.88;
+      wantEar = 0.96;
+      wantNose = 0.95;
+      wantYaw = Math.sin(world.time * 2.2) * 0.38;
+      if (ham.stateTime >= ham.stateDur) {
+        ham.targetX = BRIDGE_POS.x + randRange(-0.2, 0.2);
+        ham.targetZ = BRIDGE_POS.z + 0.62;
+        ham.nextAction = 'idle';
+        ham.hopVY = 1.1;
+        setHamState('walk', 2.6);
+      }
+      break;
+    }
+
+    case 'dig': {
+      // Head down, rump slightly up, rapid alternating front-paw digging kicking wood chips!
+      ham.digPhase += dt * 18.0;
+      wantPitch = -0.34;
+      wantEar = 0.75;
+      wantNose = 1.0;
+      ham.digTimer -= dt;
+      if (ham.digTimer <= 0) {
+        ham.digTimer = 0.22;
+        const fx = Math.sin(ham.rotY), fz = Math.cos(ham.rotY);
+        disturbBedding(ham.x + fx * 0.20, ham.z + fz * 0.20, 0.34, 0.95, false);
+        // Tiny chance hamster itself digs up a hidden wheat kernel!
+        if (Math.random() < 0.18) {
+          spawnGrain(ham.x + fx * 0.22, ham.y + 0.12, ham.z + fz * 0.22, fx * 0.35, 1.1, fz * 0.35, 'wheat', false);
+        }
+      }
+      if (ham.stateTime >= ham.stateDur) {
+        setHamState('idle', 1.2);
+      }
+      break;
+    }
+
+    case 'drink': {
+      const a = Math.atan2(WATER_POS.x - ham.x, WATER_POS.z - ham.z);
+      ham.rotY = dampAngle(ham.rotY, a, 10, dt);
+      wantPitch = -0.36 + Math.sin(world.time * 7.5) * 0.08;
+      wantEar = 0.6;
+      wantHappy = 0.55;
+      ham.thirst = Math.max(0, ham.thirst - dt * 0.45);
+      if (Math.sin(world.time * 4.5) > 0.92 && world.waterRippleAge > 0.35) {
+        world.waterRippleAge = 0;
+        sfx.playWaterPlip();
+      }
+      if (ham.stateTime >= ham.stateDur) {
+        setHamState('groom', 1.8);
+      }
+      break;
+    }
+
+    case 'house_peek': {
+      // Cute peek-a-boo inside the wooden house doorway!
+      const t = ham.stateTime;
+      const inX = HOUSE_POS.x + Math.sin(HOUSE_POS.rotY) * 0.05;
+      const inZ = HOUSE_POS.z + Math.cos(HOUSE_POS.rotY) * 0.05;
+      const peekX = HOUSE_POS.x + Math.sin(HOUSE_POS.rotY) * 0.46;
+      const peekZ = HOUSE_POS.z + Math.cos(HOUSE_POS.rotY) * 0.46;
+      if (t < 1.3) {
+        ham.inHouse = true;
+        ham.x = damp(ham.x, inX, 6, dt);
+        ham.z = damp(ham.z, inZ, 6, dt);
+        ham.rotY = dampAngle(ham.rotY, HOUSE_POS.rotY, 7, dt);
+      } else if (t < ham.stateDur - 0.5) {
+        // Poke adorable nose & whiskers out the arched doorway!
+        ham.inHouse = false;
+        ham.x = damp(ham.x, peekX, 5, dt);
+        ham.z = damp(ham.z, peekZ, 5, dt);
+        ham.rotY = dampAngle(ham.rotY, HOUSE_POS.rotY + 0.12, 7, dt);
+        wantEar = 0.95;
+        wantNose = 1.0;
+        wantYaw = Math.sin(t * 2.6) * 0.32;
+      } else {
+        // Trot cheerfully back out!
+        ham.inHouse = false;
+        ham.targetX = -0.35;
+        ham.targetZ = 0.15;
+        ham.nextAction = 'idle';
+        setHamState('walk', 3.0);
+      }
+      break;
+    }
+
+    case 'sleep': {
+      wantSleep = 1.0;
+      wantLoaf = 0.65;
+      wantEar = 0.08;
+      wantHappy = 1.0;
+      wantNose = 0.05;
+      wantYaw = 0.55;
+      wantPitch = -0.18;
+      if (ham.stateTime >= ham.stateDur) {
+        setHamState('stretch', 2.2);
+      }
+      break;
+    }
+
+    case 'stretch': {
+      // Big adorable front-paw stretch + tiny pink yawn!
+      const p = Math.sin(clamp(ham.stateTime / ham.stateDur, 0, 1) * PI);
+      wantStretch = p;
+      wantEar = 0.25 + 0.65 * (1 - p);
+      wantHappy = p * 0.9;
+      wantMouth = p * 0.95;
+      wantPitch = 0.25 * p;
+      if (ham.stateTime >= ham.stateDur) {
+        setHamState('idle', 1.4);
+      }
+      break;
+    }
+  }
+
+  // Smooth Gaze Tracking toward child's finger or dragged wheat!
+  if ((input.down || draggedStalk) && ham.state !== 'sleep' && ham.state !== 'petted' && ham.state !== 'groom') {
+    const gx = draggedStalk && stalkHead ? stalkHead[0] : input.worldHover[0];
+    const gz = draggedStalk && stalkHead ? stalkHead[2] : input.worldHover[2];
+    const desired = Math.atan2(gx - ham.x, gz - ham.z);
+    const rel = clamp(angleDiff(ham.rotY, desired), -0.68, 0.68);
+    wantYaw = lerp(wantYaw, rel, 0.72);
+    wantEar = Math.max(wantEar, 0.88);
+  }
+
+  // Smoothly damp all pose channels for lifelike organic motion
+  ham.standAmt   = damp(ham.standAmt, wantStand, 9.5, dt);
+  ham.loafAmt    = damp(ham.loafAmt, wantLoaf, 7.0, dt);
+  ham.sleepAmt   = damp(ham.sleepAmt, wantSleep, 4.5, dt);
+  ham.stretchAmt = damp(ham.stretchAmt, wantStretch, 8.0, dt);
+  ham.happyEyes  = damp(ham.happyEyes, wantHappy, 8.5, dt);
+  ham.earPerk    = damp(ham.earPerk, wantEar, 10.0, dt);
+  ham.headYaw    = damp(ham.headYaw, wantYaw, 9.0, dt);
+  ham.headPitch  = damp(ham.headPitch, wantPitch, 9.0, dt);
+  ham.headRoll   = damp(ham.headRoll, wantRoll, 9.0, dt);
+  ham.mouthOpen  = damp(ham.mouthOpen, wantMouth, 16.0, dt);
+  ham.noseTwitch = damp(ham.noseTwitch, wantNose, 10.0, dt);
+  ham.eyeBlink   = Math.max(naturalBlink, ham.sleepAmt);
+
+  // Ground vertical placement (or inside wheel bottom track / atop birch bridge!)
+  if (ham.state === 'wheel') {
+    ham.y = damp(ham.y, WHEEL_POS.y + 0.16, 12, dt);
+  } else if (ham.state === 'bridge_perch') {
+    ham.y = damp(ham.y, BRIDGE_POS.y + 0.31 + ham.hopY, 12, dt);
+  } else {
+    const targetY = beddingHeight(ham.x, ham.z) + ham.hopY;
+    ham.y = damp(ham.y, targetY, 18, dt);
+  }
+}
+
+// ============================================================================
+// 11. RENDERING HELPERS & DRAW PIPELINE
+// ============================================================================
+const tmpMat = M4.create();
+const tmpNorm = new Float32Array(9);
+const stackMats = Array.from({ length: 12 }, () => M4.create());
+
+function bindTexture(unit, tex) {
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+}
+
+let activePass = 'pbr'; // 'shadow' | 'pbr'
+
+function drawMesh(mesh, modelMat, opts = {}) {
+  if (activePass === 'shadow') {
+    if (opts.noShadow) return;
+    gl.uniformMatrix4fv(shadowProg.u.uModel, false, modelMat);
+    gl.bindVertexArray(mesh.vao);
+    gl.drawElements(gl.TRIANGLES, mesh.count, mesh.idxType, 0);
+    return;
+  }
+  const u = pbrProg.u;
+  gl.uniformMatrix4fv(u.uModel, false, modelMat);
+  M4.normalMat3(tmpNorm, modelMat);
+  gl.uniformMatrix3fv(u.uNormalMat, false, tmpNorm);
+
+  bindTexture(0, opts.albedo || TEX.white);
+  bindTexture(1, opts.normal || TEX.flatNorm);
+
+  const c = opts.color || [1, 1, 1, 1];
+  gl.uniform4f(u.uBaseColor, c[0], c[1], c[2], c.length > 3 ? c[3] : 1);
+  const ts = opts.texScale || [1, 1];
+  gl.uniform2f(u.uTexScale, ts[0], ts[1]);
+  gl.uniform1f(u.uRoughness, opts.roughness !== undefined ? opts.roughness : 0.65);
+  gl.uniform1f(u.uMetallic, opts.metallic || 0.0);
+  gl.uniform1f(u.uFurAmount, opts.fur || 0.0);
+  gl.uniform1f(u.uClearcoat, opts.clearcoat || 0.0);
+  gl.uniform1f(u.uNormalStrength, opts.normalStrength !== undefined ? opts.normalStrength : (opts.normal ? 1.0 : 0.0));
+  const sss = opts.sss || [0, 0, 0];
+  gl.uniform3f(u.uSubsurface, sss[0], sss[1], sss[2]);
+  const em = opts.emissive || [0, 0, 0];
+  gl.uniform3f(u.uEmissive, em[0], em[1], em[2]);
+
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES, mesh.count, mesh.idxType, 0);
+}
+
+function drawInstancedMesh(inst, opts = {}) {
+  if (inst.active <= 0) return;
+  if (activePass === 'shadow') {
+    if (opts.noShadow) return;
+    gl.useProgram(shadowInstProg.prog);
+    gl.uniformMatrix4fv(shadowInstProg.u.uLightVP, false, world.lightVP);
+    gl.bindVertexArray(inst.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, inst.count, inst.idxType, 0, inst.active);
+    gl.useProgram(shadowProg.prog);
+    return;
+  }
+  gl.useProgram(pbrInstProg.prog);
+  setGlobalPBRUniforms(pbrInstProg);
+  const u = pbrInstProg.u;
+  bindTexture(0, opts.albedo || TEX.white);
+  bindTexture(1, opts.normal || TEX.flatNorm);
+  const c = opts.color || [1, 1, 1, 1];
+  gl.uniform4f(u.uBaseColor, c[0], c[1], c[2], c.length > 3 ? c[3] : 1);
+  const ts = opts.texScale || [1, 1];
+  gl.uniform2f(u.uTexScale, ts[0], ts[1]);
+  gl.uniform1f(u.uRoughness, opts.roughness !== undefined ? opts.roughness : 0.65);
+  gl.uniform1f(u.uMetallic, opts.metallic || 0.0);
+  gl.uniform1f(u.uFurAmount, opts.fur || 0.0);
+  gl.uniform1f(u.uClearcoat, opts.clearcoat || 0.0);
+  gl.uniform1f(u.uNormalStrength, opts.normalStrength !== undefined ? opts.normalStrength : (opts.normal ? 1.0 : 0.0));
+  const sss = opts.sss || [0, 0, 0];
+  gl.uniform3f(u.uSubsurface, sss[0], sss[1], sss[2]);
+  gl.uniform3f(u.uEmissive, 0, 0, 0);
+
+  gl.bindVertexArray(inst.vao);
+  gl.drawElementsInstanced(gl.TRIANGLES, inst.count, inst.idxType, 0, inst.active);
+  gl.useProgram(pbrProg.prog);
+}
+
+function setGlobalPBRUniforms(p) {
+  const u = p.u;
+  gl.uniformMatrix4fv(u.uVP, false, world.vpMat);
+  gl.uniformMatrix4fv(u.uLightVP, false, world.lightVP);
+  gl.uniform1i(u.uAlbedoTex, 0);
+  gl.uniform1i(u.uNormalTex, 1);
+  gl.uniform1i(u.uShadowTex, 2);
+  bindTexture(2, shadowTex);
+  gl.uniform3fv(u.uCamPos, world.camPos);
+  gl.uniform3fv(u.uSunDir, world.sunDir);
+  gl.uniform3fv(u.uSunColor, world.sunColor);
+  gl.uniform3fv(u.uRimDir, world.rimDir);
+  gl.uniform3fv(u.uRimColor, world.rimColor);
+  gl.uniform3fv(u.uSkyColor, world.skyColor);
+  gl.uniform3fv(u.uGroundColor, world.groundColor);
+  gl.uniform3f(u.uLampPos, LAMP_POS.x - 0.15, LAMP_POS.y + 1.15, LAMP_POS.z + 0.15);
+  gl.uniform3fv(u.uLampColor, world.lampColor);
+  gl.uniform3f(u.uHamsterPos, ham.x, ham.y, ham.z);
+  gl.uniform1f(u.uShadowTexel, 1.0 / SHADOW_SIZE);
+}
+
+function writeInstance(inst, idx, m, tint) {
+  const off = idx * 20;
+  inst.instData.set(m, off);
+  inst.instData[off+16] = tint[0];
+  inst.instData[off+17] = tint[1];
+  inst.instData[off+18] = tint[2];
+  inst.instData[off+19] = tint[3] !== undefined ? tint[3] : 1;
+}
+function uploadInstances(inst) {
+  if (inst.active <= 0) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, inst.instBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst.instData.subarray(0, inst.active * 20));
+}
+
+// Prepare all instanced buffers once per frame
+function packAllInstances() {
+  // 1. Wood Shavings
+  instShavings.active = shavings.length;
+  for (let i = 0; i < shavings.length; i++) {
+    const s = shavings[i];
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, s.x, s.y, s.z);
+    M4.rotateY(tmpMat, tmpMat, s.ry);
+    M4.rotateX(tmpMat, tmpMat, s.rx);
+    M4.rotateZ(tmpMat, tmpMat, s.rz);
+    M4.scale(tmpMat, tmpMat, s.scale, s.scale, s.scale);
+    writeInstance(instShavings, i, tmpMat, [s.tint[0], s.tint[1], s.tint[2], 1]);
+  }
+  uploadInstances(instShavings);
+
+  // 2. Loose Wheat Grains & Sunflower Seeds
+  let wCount = 0, sCount = 0;
+  for (let i = 0; i < grains.length; i++) {
+    const g = grains[i];
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, g.x, g.y, g.z);
+    M4.rotateY(tmpMat, tmpMat, g.ry);
+    M4.rotateX(tmpMat, tmpMat, g.rx + PI * 0.5);
+    M4.rotateZ(tmpMat, tmpMat, g.rz);
+    if (g.kind === 'sunflower') {
+      if (sCount < instSunGrains.maxInstances) {
+        M4.scale(tmpMat, tmpMat, 1.45, 1.55, 0.95);
+        writeInstance(instSunGrains, sCount++, tmpMat, [1, 1, 1, 1]);
+      }
+    } else {
+      if (wCount < instWheatGrains.maxInstances) {
+        M4.scale(tmpMat, tmpMat, 1.15, 1.15, 1.15);
+        writeInstance(instWheatGrains, wCount++, tmpMat, [1.02, 0.98, 0.88, 1]);
+      }
+    }
+  }
+  instWheatGrains.active = wCount;
+  instSunGrains.active = sCount;
+  uploadInstances(instWheatGrains);
+
+  // 3. Wheat Stalk Kernels (braided herringbone ears!)
+  let kCount = 0;
+  for (const st of wheatStalks) {
+    if (st.growScale < 0.03) continue;
+    const len = st.length * st.growScale;
+    const lx = st.leanX + st.bendX;
+    const lz = st.leanZ + st.bendZ;
+    for (let j = 0; j < st.kernels.length; j++) {
+      const kn = st.kernels[j];
+      if (!kn.present || kCount >= instStalkKernels.maxInstances) continue;
+      const frac = 0.58 + kn.t * 0.36;
+      const bend = frac * frac;
+      let kx, ky, kz, rotY, rotX, rotZ;
+      if (st.state === 'dropped') {
+        const d = len * (frac - 0.15);
+        kx = st.x + Math.cos(st.dropRotY) * d - Math.sin(st.dropRotY) * kn.side * 0.036;
+        ky = st.y + 0.045 + Math.sin(kn.t * PI) * 0.015;
+        kz = st.z + Math.sin(st.dropRotY) * d + Math.cos(st.dropRotY) * kn.side * 0.036;
+        rotY = -st.dropRotY + kn.side * 0.5;
+        rotX = PI * 0.5;
+        rotZ = 0;
+      } else {
+        kx = st.x + lx * len * bend + kn.side * 0.032;
+        ky = st.y + len * frac * 0.95;
+        kz = st.z + lz * len * bend + (j % 3 - 1) * 0.014;
+        rotY = kn.side * 0.4;
+        rotX = lz * 0.7;
+        rotZ = -lx * 0.7 - kn.angle;
+      }
+      M4.identity(tmpMat);
+      M4.translate(tmpMat, tmpMat, kx, ky, kz);
+      M4.rotateY(tmpMat, tmpMat, rotY);
+      M4.rotateX(tmpMat, tmpMat, rotX);
+      M4.rotateZ(tmpMat, tmpMat, rotZ);
+      const sc = kn.scale * st.growScale * 1.08;
+      M4.scale(tmpMat, tmpMat, sc, sc, sc);
+      writeInstance(instStalkKernels, kCount++, tmpMat, [1.04, 0.98, 0.85, 1]);
+    }
+  }
+  instStalkKernels.active = kCount;
+  uploadInstances(instStalkKernels);
+  uploadInstances(instSunGrains);
+}
+
+// ============================================================================
+// 12. DRAW HAMSTER (EXPRESSIVE ARTICULATED GOLDEN HAMSTER)
+// ============================================================================
+function drawHamster(transparentPass = false) {
+  const breath = Math.sin(world.time * (ham.sleepAmt > 0.5 ? 2.1 : 4.2)) * 0.022;
+  const walkBob = Math.abs(Math.sin(ham.walkPhase)) * clamp(ham.speed * 0.038, 0, 0.045);
+  const loafSqX = 1.0 + ham.loafAmt * 0.24;
+  const loafSqY = 1.0 - ham.loafAmt * 0.26 + breath;
+  const loafSqZ = 1.0 + ham.loafAmt * 0.14 + ham.stretchAmt * 0.24;
+
+  // Root transform on ground
+  const MRoot = stackMats[0];
+  M4.identity(MRoot);
+  M4.translate(MRoot, MRoot, ham.x, ham.y + 0.19 * (1 - ham.loafAmt * 0.28) + walkBob + ham.standAmt * 0.06, ham.z);
+  M4.rotateY(MRoot, MRoot, ham.rotY);
+
+  // Spine pitch: tilts upright when standing/eating/grooming/unpacking!
+  const spinePitch = -ham.standAmt * 0.94 + ham.stretchAmt * 0.18 + (ham.state === 'dig' ? 0.25 : 0);
+  const bodyRoll = ham.headRoll * 0.35 + (ham.sleepAmt * 0.18);
+
+  const MBody = stackMats[1];
+  M4.copy(MBody, MRoot);
+  M4.rotateX(MBody, MBody, spinePitch);
+  M4.rotateZ(MBody, MBody, bodyRoll);
+
+  if (!transparentPass) {
+    // --- 1. Plump Pear Torso ---
+    M4.copy(tmpMat, MBody);
+    M4.scale(tmpMat, tmpMat, loafSqX, loafSqY, loafSqZ);
+    drawMesh(MESH.hamBody, tmpMat, {
+      albedo: TEX.fur, normal: TEX.furNorm,
+      roughness: 0.86, fur: 1.0, normalStrength: 1.15,
+      color: [1.0, 0.97, 0.93, 1]
+    });
+
+    // --- 2. Tiny Stubby Pink Tail ---
+    const tailWig = Math.sin(world.time * 12 + ham.walkPhase) * (ham.state === 'dig' ? 0.45 : 0.18);
+    M4.copy(tmpMat, MBody);
+    M4.translate(tmpMat, tmpMat, 0, -0.02, -0.34 * loafSqZ);
+    M4.rotateY(tmpMat, tmpMat, tailWig);
+    M4.scale(tmpMat, tmpMat, 0.044, 0.040, 0.056);
+    drawMesh(MESH.sphereLow, tmpMat, {
+      color: [0.95, 0.72, 0.72, 1], roughness: 0.65, fur: 0.3, sss: [0.45, 0.18, 0.18]
+    });
+
+    // --- 3. Back Feet (Hind Paws) ---
+    for (const side of [-1, 1]) {
+      const stride = Math.sin(ham.walkPhase + (side > 0 ? 0 : PI)) * clamp(ham.speed * 0.10, 0, 0.11);
+      M4.copy(tmpMat, MRoot);
+      M4.translate(tmpMat, tmpMat, side * 0.145 * loafSqX, -0.155 + ham.loafAmt * 0.03, -0.11 + stride);
+      M4.rotateY(tmpMat, tmpMat, side * 0.24);
+      M4.scale(tmpMat, tmpMat, 1.15, 0.95, 1.35);
+      drawMesh(MESH.hamPaw, tmpMat, {
+        color: [0.96, 0.74, 0.73, 1], roughness: 0.58, sss: [0.42, 0.16, 0.16]
+      });
+    }
+
+    // --- 4. Expressive Front Paws (Walking / Begging / Eating / Unpacking / Washing / Digging!) ---
+    for (const side of [-1, 1]) {
+      const MPaw = stackMats[2];
+      M4.copy(MPaw, MBody);
+      let px = side * 0.14, py = -0.16, pz = 0.20;
+      let rx = 0, ry = side * 0.12, rz = 0;
+
+      if (ham.state === 'groom') {
+        // Rhythmic circular face-washing over nose & cheeks!
+        const ph = ham.groomPhase + (side > 0 ? 0.35 : 0);
+        px = side * (0.075 + Math.cos(ph) * 0.045);
+        py = -0.02 + Math.sin(ph) * 0.095;
+        pz = 0.36 + Math.cos(ph) * 0.04;
+        rx = -0.8;
+      } else if (ham.state === 'unpack') {
+        // Both paws sweeping from behind the chubby cheeks forward to push grains out!
+        const push = Math.sin(ham.unpackPhase) * 0.5 + 0.5;
+        const cheekOut = 0.18 + totalCheekFill() * 0.13;
+        px = side * lerp(cheekOut + 0.03, 0.08, push);
+        py = -0.03 + push * 0.05;
+        pz = lerp(0.24, 0.42, push);
+        ry = -side * 0.45;
+      } else if (ham.state === 'eat_ground' || ham.state === 'eat_stalk') {
+        // Both tiny paws holding the wheat kernel right up to the mouth!
+        const nib = Math.sin(ham.nibblePhase + side) * 0.018;
+        px = side * 0.058;
+        py = -0.05 + nib;
+        pz = 0.38;
+        ry = -side * 0.42;
+        rx = -0.5;
+      } else if (ham.state === 'dig') {
+        const dph = ham.digPhase + (side > 0 ? PI : 0);
+        px = side * 0.11;
+        py = -0.17 + Math.sin(dph) * 0.065;
+        pz = 0.23 + Math.cos(dph) * 0.09;
+      } else if (ham.standAmt > 0.35) {
+        // Cute tucked chest paws fluttering while standing/begging!
+        const flut = Math.sin(world.time * 9 + side) * 0.02;
+        px = side * 0.095;
+        py = -0.06 + flut;
+        pz = 0.32;
+        rx = -0.55;
+      } else if (ham.stretchAmt > 0.05) {
+        // Extended far forward during cute stretch!
+        px = side * 0.11;
+        py = -0.17;
+        pz = 0.22 + ham.stretchAmt * 0.24;
+      } else {
+        // Normal adorable trot stride
+        const st = Math.sin(ham.walkPhase + (side > 0 ? PI : 0)) * clamp(ham.speed * 0.11, 0, 0.12);
+        px = side * 0.135 * loafSqX;
+        py = -0.155 + ham.loafAmt * 0.03 + Math.max(0, st * 0.4);
+        pz = 0.18 + st;
+      }
+      M4.translate(MPaw, MPaw, px, py, pz);
+      M4.rotateX(MPaw, MPaw, rx);
+      M4.rotateY(MPaw, MPaw, ry);
+      M4.rotateZ(MPaw, MPaw, rz);
+      drawMesh(MESH.hamPaw, MPaw, {
+        color: [0.97, 0.74, 0.74, 1], roughness: 0.56, sss: [0.46, 0.16, 0.16]
+      });
+    }
+
+    // Held Wheat Kernel or Sunflower Seed between tiny paws while nibbling!
+    if (ham.heldGrainKind) {
+      M4.copy(tmpMat, MBody);
+      M4.translate(tmpMat, tmpMat, 0, -0.04 + Math.sin(ham.nibblePhase) * 0.012, 0.42);
+      M4.rotateZ(tmpMat, tmpMat, 0.35 + Math.sin(ham.nibblePhase * 0.5) * 0.25);
+      M4.rotateX(tmpMat, tmpMat, 0.4);
+      const isSun = ham.heldGrainKind === 'sunflower';
+      M4.scale(tmpMat, tmpMat, isSun ? 1.55 : 1.3, isSun ? 1.65 : 1.3, isSun ? 1.0 : 1.3);
+      drawMesh(MESH.kernel, tmpMat, {
+        albedo: isSun ? TEX.sunflower : TEX.wheat,
+        normal: isSun ? TEX.flatNorm : TEX.wheatNorm,
+        roughness: 0.48
+      });
+    }
+  }
+
+  // --- 5. Head Transform (Counter-pitched so head stays cute & level when standing!) ---
+  const MHead = stackMats[3];
+  M4.copy(MHead, MBody);
+  M4.translate(MHead, MHead, 0, 0.055 - ham.loafAmt * 0.03, 0.285 * loafSqZ);
+  M4.rotateX(MHead, MHead, -spinePitch * 0.78 + ham.headPitch);
+  M4.rotateY(MHead, MHead, ham.headYaw);
+  M4.rotateZ(MHead, MHead, ham.headRoll);
+
+  if (!transparentPass) {
+    // Head skull
+    drawMesh(MESH.hamHead, MHead, {
+      albedo: TEX.headFur, normal: TEX.headFurNorm,
+      roughness: 0.84, fur: 1.0, normalStrength: 1.1
+    });
+
+    // --- 6. SIGNATURE DYNAMIC SPRING-PHYSICS CHEEK POUCHES (左・右のほっぺ袋!) ---
+    for (const side of [-1, 1]) {
+      const fill = side < 0 ? ham.cheekFillL : ham.cheekFillR;
+      const spr  = side < 0 ? ham.cheekSpringL : ham.cheekSpringR;
+      const fEff = clamp(fill + spr * 0.12, -0.08, 1.35);
+
+      // Scales dramatically from soft natural cheek -> huge adorable chubby peanut cheek!
+      const sx = 0.76 + fEff * 1.18 + Math.max(0, spr * 0.10);
+      const sy = 0.78 + fEff * 0.76 - Math.max(0, spr * 0.05);
+      const sz = 0.82 + fEff * 0.92;
+      const ox = side * (0.125 + fEff * 0.095);
+      const oy = -0.032 - fEff * 0.022;
+      const oz = 0.055 - fEff * 0.055;
+
+      M4.copy(tmpMat, MHead);
+      M4.translate(tmpMat, tmpMat, ox, oy, oz);
+      M4.rotateY(tmpMat, tmpMat, side * (0.18 + fEff * 0.16));
+      M4.rotateZ(tmpMat, tmpMat, -side * (0.10 + fEff * 0.12));
+      M4.scale(tmpMat, tmpMat, sx, sy, sz);
+      drawMesh(MESH.hamCheek, tmpMat, {
+        albedo: TEX.headFur, normal: TEX.headFurNorm,
+        roughness: 0.84, fur: 1.05, normalStrength: 0.95,
+        color: [1.03, 0.98, 0.92, 1]
+      });
+    }
+
+    // --- 7. Fluffy Cream Muzzle Puffs (ω whisker pads) + Twitching Rosy Pink Nose + Cute Mouth ---
+    for (const side of [-1, 1]) {
+      M4.copy(tmpMat, MHead);
+      M4.translate(tmpMat, tmpMat, side * 0.044, -0.056, 0.214);
+      M4.scale(tmpMat, tmpMat, 0.054, 0.044, 0.046);
+      drawMesh(MESH.sphereLow, tmpMat, {
+        color: [0.99, 0.95, 0.89, 1], roughness: 0.88, fur: 0.95
+      });
+    }
+    const noseBob = Math.sin(world.time * 24) * 0.008 * ham.noseTwitch;
+    M4.copy(tmpMat, MHead);
+    M4.translate(tmpMat, tmpMat, 0, -0.028 + noseBob, 0.252);
+    M4.scale(tmpMat, tmpMat, 0.030, 0.024, 0.022);
+    drawMesh(MESH.sphereLow, tmpMat, {
+      color: [0.96, 0.56, 0.62, 1], roughness: 0.24, clearcoat: 0.65, sss: [0.55, 0.2, 0.2]
+    });
+
+    if (ham.mouthOpen > 0.06) {
+      M4.copy(tmpMat, MHead);
+      M4.translate(tmpMat, tmpMat, 0, -0.064, 0.218);
+      M4.scale(tmpMat, tmpMat, 0.026 * (0.6 + ham.mouthOpen * 0.6), 0.024 * ham.mouthOpen, 0.020);
+      drawMesh(MESH.sphereLow, tmpMat, {
+        color: [0.82, 0.36, 0.42, 1], roughness: 0.35
+      });
+    }
+
+    // --- 8. Glossy Marble Eyes with Dual Catchlights + Blinking / Happy Crescent Eyelids ---
+    for (const side of [-1, 1]) {
+      const ex = side * 0.118, ey = 0.048, ez = 0.162;
+      const squint = Math.max(ham.eyeBlink, ham.happyEyes * 0.82);
+
+      // Glossy dark-espresso eyeball
+      M4.copy(tmpMat, MHead);
+      M4.translate(tmpMat, tmpMat, ex, ey, ez);
+      M4.scale(tmpMat, tmpMat, 0.044, 0.046 * (1.0 - squint * 0.72), 0.042);
+      drawMesh(MESH.sphere, tmpMat, {
+        color: [0.06, 0.04, 0.035, 1], roughness: 0.04, clearcoat: 1.0
+      });
+
+      // Soft fur upper eyelid (closes smoothly on blink & happy squint!)
+      if (squint > 0.05) {
+        M4.copy(tmpMat, MHead);
+        M4.translate(tmpMat, tmpMat, ex * 1.01, ey + 0.024 * (1 - squint * 0.75), ez + 0.008);
+        M4.rotateZ(tmpMat, tmpMat, -side * ham.happyEyes * 0.28);
+        M4.scale(tmpMat, tmpMat, 0.050, 0.028 * squint + 0.008, 0.046);
+        drawMesh(MESH.sphereLow, tmpMat, {
+          color: [0.86, 0.60, 0.34, 1], roughness: 0.85, fur: 0.8
+        });
+      }
+    }
+
+    // --- 9. Translucent Cupped Petal Ears (Glowing Rosy Pink in Sunset Backlight!) ---
+    for (const side of [-1, 1]) {
+      const wiggle = Math.sin(world.time * 4.5 + side * 2.1) * 0.06;
+      M4.copy(tmpMat, MHead);
+      M4.translate(tmpMat, tmpMat, side * 0.145, 0.145, -0.025);
+      M4.rotateY(tmpMat, tmpMat, side * (0.38 - ham.earPerk * 0.25));
+      M4.rotateX(tmpMat, tmpMat, lerp(-0.55, 0.18, ham.earPerk) + wiggle);
+      M4.rotateZ(tmpMat, tmpMat, -side * lerp(0.55, 0.22, ham.earPerk));
+      drawMesh(MESH.hamEar, tmpMat, {
+        color: [0.92, 0.68, 0.58, 1], roughness: 0.76, fur: 0.55,
+        sss: [0.95, 0.36, 0.32]
+      });
+    }
+  } else {
+    // Transparent Pass: Delicate Translucent Whiskers!
+    for (const side of [-1, 1]) {
+      for (let w = 0; w < 3; w++) {
+        const wTwitch = Math.sin(world.time * 20 + w * 1.7 + side) * 0.08 * ham.noseTwitch;
+        M4.copy(tmpMat, MHead);
+        M4.translate(tmpMat, tmpMat, side * 0.095, -0.038 + (w - 1) * 0.018, 0.205);
+        M4.rotateY(tmpMat, tmpMat, side * (0.25 + (w - 1) * 0.12));
+        M4.rotateZ(tmpMat, tmpMat, -side * (PI * 0.5 + (w - 1) * 0.16 + wTwitch));
+        M4.scale(tmpMat, tmpMat, 0.0026, 0.155, 0.0026);
+        M4.translate(tmpMat, tmpMat, 0, 0.5, 0);
+        drawMesh(MESH.cyl, tmpMat, {
+          color: [1.0, 0.96, 0.90, 0.52], roughness: 0.4, noShadow: true
+        });
+      }
+    }
+  }
+}
+
+// ============================================================================
+// 13. DRAW SCENE PROPS & ROOM ARCHITECTURE
+// ============================================================================
+function drawOpaqueScene() {
+  // --- 1. Warm Walnut Desk Surface ---
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, 0, -0.15, -0.2);
+  M4.scale(tmpMat, tmpMat, 12.0, 0.30, 8.2);
+  drawMesh(MESH.box, tmpMat, {
+    albedo: TEX.walnut, normal: TEX.walnutNorm, texScale: [3.2, 2.2],
+    roughness: 0.42, clearcoat: 0.22
+  });
+
+  // --- 2. Cozy Bedroom Plaster Wall framing the Twilight Window ---
+  // Window opening: x in [-2.35, 2.15], y in [0.75, 4.10] at z = -3.35
+  const wallOpts = { albedo: TEX.wall, normal: TEX.wallNorm, texScale: [2.5, 2.5], roughness: 0.92, noShadow: true };
+  // Left wall pillar
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, -5.2, 2.4, -3.35); M4.scale(tmpMat, tmpMat, 5.7, 6.2, 0.25);
+  drawMesh(MESH.box, tmpMat, wallOpts);
+  // Right wall pillar
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, 5.0, 2.4, -3.35); M4.scale(tmpMat, tmpMat, 5.7, 6.2, 0.25);
+  drawMesh(MESH.box, tmpMat, wallOpts);
+  // Lower wall below windowsill
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, -0.1, 0.2, -3.35); M4.scale(tmpMat, tmpMat, 5.2, 1.35, 0.25);
+  drawMesh(MESH.box, tmpMat, wallOpts);
+  // Upper wall header above window
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, -0.1, 4.85, -3.35); M4.scale(tmpMat, tmpMat, 5.2, 1.6, 0.25);
+  drawMesh(MESH.box, tmpMat, wallOpts);
+
+  // Wooden Window Frame, Sill & Mullions
+  const winWood = { albedo: TEX.birch, normal: TEX.birchNorm, color: [0.85, 0.72, 0.60, 1], roughness: 0.62, noShadow: true };
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, -0.1, 0.82, -3.18); M4.scale(tmpMat, tmpMat, 4.85, 0.14, 0.42);
+  drawMesh(MESH.box, tmpMat, winWood);
+  // Vertical center & side mullions
+  for (const mx of [-2.35, -0.1, 2.15]) {
+    M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, mx, 2.45, -3.28); M4.scale(tmpMat, tmpMat, 0.12, 3.35, 0.16);
+    drawMesh(MESH.box, tmpMat, winWood);
+  }
+  // Horizontal cross bar
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, -0.1, 2.45, -3.28); M4.scale(tmpMat, tmpMat, 4.6, 0.10, 0.14);
+  drawMesh(MESH.box, tmpMat, winWood);
+
+  // Gently Swaying Sheer Linen Curtains flanking the window
+  const cSway = Math.sin(world.time * 1.1) * 0.04 + world.breezeAnim * Math.sin(world.time * 3.8) * 0.12;
+  for (const side of [-1, 1]) {
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, side < 0 ? -2.28 : 2.12, 2.55, -3.02);
+    M4.rotateY(tmpMat, tmpMat, side * -0.15 + cSway);
+    drawMesh(MESH.curtain, tmpMat, {
+      albedo: TEX.linen, normal: TEX.linenNorm, roughness: 0.88,
+      color: [1.0, 0.96, 0.90, 1], sss: [0.68, 0.52, 0.36], noShadow: true
+    });
+  }
+
+  // Cozy Terracotta Houseplant Pot on the Twilight Windowsill
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, -1.62, 1.06, -3.14); M4.scale(tmpMat, tmpMat, 0.19, 0.34, 0.19);
+  drawMesh(MESH.cyl, tmpMat, { color: [0.76, 0.44, 0.32, 1], roughness: 0.72, noShadow: true });
+  for (let l = 0; l < 5; l++) {
+    const la = (l / 5) * TAU + 0.4;
+    const leafSway = Math.sin(world.time * 1.5 + l) * 0.05 + world.breezeAnim * 0.14;
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, -1.62 + Math.cos(la) * 0.14, 1.34 + (l % 2) * 0.08, -3.14 + Math.sin(la) * 0.10);
+    M4.rotateZ(tmpMat, tmpMat, Math.cos(la) * -0.45 + leafSway);
+    M4.rotateX(tmpMat, tmpMat, Math.sin(la) * 0.35);
+    M4.scale(tmpMat, tmpMat, 0.14, 0.05, 0.22);
+    drawMesh(MESH.sphereLow, tmpMat, {
+      color: [0.34, 0.54, 0.34, 1], roughness: 0.62, sss: [0.35, 0.58, 0.22], noShadow: true
+    });
+  }
+
+  // --- 3. Wooden Enclosure Base & Rim Posts ---
+  const encWood = { albedo: TEX.birch, normal: TEX.birchNorm, texScale: [2.2, 1.0], roughness: 0.58 };
+  // Back wall wooden panel (low cozy wall)
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, 0, 0.26, -1.80); M4.scale(tmpMat, tmpMat, 5.45, 0.54, 0.12);
+  drawMesh(MESH.box, tmpMat, encWood);
+  // Left & Right low wooden rims
+  for (const sx of [-2.66, 2.66]) {
+    M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, sx, 0.22, -0.05); M4.scale(tmpMat, tmpMat, 0.12, 0.46, 3.62);
+    drawMesh(MESH.box, tmpMat, encWood);
+  }
+  // Front low wooden lip (low so child sees right in!)
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, 0, 0.10, 1.72); M4.scale(tmpMat, tmpMat, 5.45, 0.22, 0.12);
+  drawMesh(MESH.box, tmpMat, encWood);
+  // Four corner wooden posts
+  for (const cx of [-2.66, 2.66]) {
+    for (const cz of [-1.80, 1.72]) {
+      const h = cz < 0 ? 1.05 : 0.72;
+      M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, cx, h * 0.5, cz); M4.scale(tmpMat, tmpMat, 0.16, h, 0.16);
+      drawMesh(MESH.box, tmpMat, encWood);
+    }
+  }
+
+  // --- 4. Aspen Wood-Shavings Bedding Terrain ---
+  M4.identity(tmpMat);
+  drawMesh(MESH.bedding, tmpMat, {
+    albedo: TEX.bedding, normal: TEX.beddingNorm, roughness: 0.92, normalStrength: 1.35
+  });
+
+  // --- 5. Cozy Cotton Nest Pillow right in front of Wooden House ---
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU + 0.3;
+    const rx = Math.cos(a) * 0.22, rz = Math.sin(a) * 0.17;
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, NEST_POS.x + rx, NEST_POS.y + 0.035, NEST_POS.z + rz);
+    M4.scale(tmpMat, tmpMat, 0.14, 0.055, 0.12);
+    drawMesh(MESH.sphereLow, tmpMat, {
+      color: [0.98, 0.94, 0.87, 1], roughness: 0.95, fur: 0.65
+    });
+  }
+
+  // --- 6. Wooden House (木のおうち) ---
+  const knockJig = Math.sin(world.houseKnockAnim * PI * 4) * world.houseKnockAnim * 0.04;
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, HOUSE_POS.x, HOUSE_POS.y, HOUSE_POS.z);
+  M4.rotateY(tmpMat, tmpMat, HOUSE_POS.rotY);
+  M4.rotateZ(tmpMat, tmpMat, knockJig);
+  drawMesh(MESH.house, tmpMat, {
+    albedo: TEX.birch, normal: TEX.birchNorm, texScale: [1.4, 1.4], roughness: 0.62
+  });
+
+  // --- 7. Little Natural Birch Arch Bridge ---
+  for (let i = 0; i < 7; i++) {
+    const t = (i / 6) - 0.5;
+    const bx = BRIDGE_POS.x + t * 0.72;
+    const by = BRIDGE_POS.y + 0.09 + Math.cos(t * PI) * 0.20;
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, bx, by, BRIDGE_POS.z);
+    M4.rotateX(tmpMat, tmpMat, PI * 0.5);
+    M4.scale(tmpMat, tmpMat, 0.056, 0.52, 0.056);
+    drawMesh(MESH.cyl, tmpMat, {
+      albedo: TEX.birch, normal: TEX.birchNorm,
+      color: [0.92 - (i % 2) * 0.07, 0.80 - (i % 2) * 0.06, 0.66, 1], roughness: 0.72
+    });
+  }
+
+  // --- 8. Wooden Exercise Wheel (Stand + Rotating Drum + Cork Track!) ---
+  const MW = stackMats[4];
+  M4.identity(MW);
+  M4.translate(MW, MW, WHEEL_POS.x, WHEEL_POS.y, WHEEL_POS.z);
+  M4.rotateY(MW, MW, WHEEL_POS.rotY);
+
+  // Stand base & upright post
+  M4.copy(tmpMat, MW); M4.translate(tmpMat, tmpMat, 0, 0.03, -0.10); M4.scale(tmpMat, tmpMat, 0.62, 0.06, 0.42);
+  drawMesh(MESH.box, tmpMat, encWood);
+  M4.copy(tmpMat, MW); M4.translate(tmpMat, tmpMat, 0, 0.42, -0.25); M4.scale(tmpMat, tmpMat, 0.14, 0.82, 0.07);
+  drawMesh(MESH.box, tmpMat, encWood);
+
+  // Spinning drum + cork lining + center hub
+  const MWSpin = stackMats[5];
+  M4.copy(MWSpin, MW);
+  M4.translate(MWSpin, MWSpin, 0, 0.74, 0.0);
+  M4.rotateZ(MWSpin, MWSpin, world.wheelAngle);
+  M4.rotateX(MWSpin, MWSpin, PI * 0.5);
+  drawMesh(MESH.wheelDrum, MWSpin, {
+    albedo: TEX.birch, normal: TEX.birchNorm, roughness: 0.56
+  });
+  drawMesh(MESH.wheelCork, MWSpin, {
+    albedo: TEX.cork, normal: TEX.corkNorm, texScale: [3.0, 1.0], roughness: 0.88
+  });
+  // Center wooden axle nut + subtle wood ribs on back wall so spinning is clearly visible!
+  M4.copy(tmpMat, MWSpin); M4.translate(tmpMat, tmpMat, 0, -0.13, 0); M4.scale(tmpMat, tmpMat, 0.09, 0.09, 0.09);
+  drawMesh(MESH.cyl, tmpMat, { albedo: TEX.walnut, roughness: 0.5 });
+  for (let r = 0; r < 6; r++) {
+    M4.copy(tmpMat, MWSpin);
+    M4.translate(tmpMat, tmpMat, 0, -0.145, 0);
+    M4.rotateY(tmpMat, tmpMat, (r / 6) * TAU);
+    M4.scale(tmpMat, tmpMat, 0.032, 0.018, 0.56);
+    drawMesh(MESH.box, tmpMat, { albedo: TEX.walnut, roughness: 0.62 });
+  }
+
+  // --- 9. Glazed Ceramic Food Bowl ---
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, BOWL_POS.x, BOWL_POS.y, BOWL_POS.z);
+  drawMesh(MESH.bowl, tmpMat, {
+    albedo: TEX.ceramic, normal: TEX.ceramicNorm,
+    roughness: 0.16, clearcoat: 0.72, normalStrength: 0.35
+  });
+
+  // --- 10. Stoneware Water Dish Base ---
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, WATER_POS.x, WATER_POS.y, WATER_POS.z);
+  drawMesh(MESH.waterDish, tmpMat, {
+    albedo: TEX.ceramic, normal: TEX.ceramicNorm,
+    color: [0.90, 0.95, 0.98, 1], roughness: 0.14, clearcoat: 0.8
+  });
+
+  // --- 11. Woven Rattan Wheat Basket ---
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, BASKET_POS.x, BASKET_POS.y, BASKET_POS.z);
+  drawMesh(MESH.basket, tmpMat, {
+    albedo: TEX.basket, normal: TEX.basketNorm, texScale: [3.2, 1.8],
+    roughness: 0.82, normalStrength: 1.4
+  });
+
+  // --- 12. Wheat Stalk Stems & Delicate Awns ---
+  const stalkOpts = { albedo: TEX.wheat, normal: TEX.wheatNorm, roughness: 0.68, color: [0.96, 0.88, 0.65, 1] };
+  for (const st of wheatStalks) {
+    if (st.growScale < 0.03) continue;
+    const len = st.length * st.growScale;
+    const lx = st.leanX + st.bendX;
+    const lz = st.leanZ + st.bendZ;
+
+    if (st.state === 'dropped') {
+      M4.identity(tmpMat);
+      M4.translate(tmpMat, tmpMat, st.x + Math.cos(st.dropRotY)*len*0.35, st.y + 0.03, st.z + Math.sin(st.dropRotY)*len*0.35);
+      M4.rotateY(tmpMat, tmpMat, -st.dropRotY + PI * 0.5);
+      M4.rotateX(tmpMat, tmpMat, PI * 0.5);
+      M4.scale(tmpMat, tmpMat, 0.015, len * 0.88, 0.015);
+      drawMesh(MESH.cyl, tmpMat, stalkOpts);
+    } else {
+      // 2-segment gracefully bent golden straw stem
+      const midX = st.x + lx * len * 0.25;
+      const midY = st.y + len * 0.46;
+      const midZ = st.z + lz * len * 0.25;
+      M4.identity(tmpMat);
+      M4.translate(tmpMat, tmpMat, (st.x + midX)*0.5, (st.y + midY)*0.5, (st.z + midZ)*0.5);
+      M4.rotateZ(tmpMat, tmpMat, -lx * 0.45);
+      M4.rotateX(tmpMat, tmpMat, lz * 0.45);
+      M4.scale(tmpMat, tmpMat, 0.016, len * 0.52, 0.016);
+      drawMesh(MESH.cyl, tmpMat, stalkOpts);
+
+      const topX = st.x + lx * len * 0.82;
+      const topY = st.y + len * 0.94;
+      const topZ = st.z + lz * len * 0.82;
+      M4.identity(tmpMat);
+      M4.translate(tmpMat, tmpMat, (midX + topX)*0.5, (midY + topY)*0.5, (midZ + topZ)*0.5);
+      M4.rotateZ(tmpMat, tmpMat, -lx * 0.88);
+      M4.rotateX(tmpMat, tmpMat, lz * 0.88);
+      M4.scale(tmpMat, tmpMat, 0.013, len * 0.54, 0.013);
+      drawMesh(MESH.cyl, tmpMat, stalkOpts);
+
+      // Delicate fine golden wheat awns (beards) fanning from the top of the ear!
+      if (st.remaining > 0) {
+        for (let a = 0; a < 4; a++) {
+          const fan = (a - 1.5) * 0.16;
+          M4.identity(tmpMat);
+          M4.translate(tmpMat, tmpMat, topX, topY + 0.07, topZ);
+          M4.rotateZ(tmpMat, tmpMat, -lx * 0.9 + fan);
+          M4.rotateX(tmpMat, tmpMat, lz * 0.9 + (a % 2 - 0.5) * 0.14);
+          M4.scale(tmpMat, tmpMat, 0.0035, 0.24 * st.growScale, 0.0035);
+          drawMesh(MESH.cyl, tmpMat, { color: [1.0, 0.92, 0.68, 1], roughness: 0.6, noShadow: true });
+        }
+      }
+    }
+  }
+
+  // --- 13. Glass Wheat Jar Inner Golden Grain Fill + Cork Stopper ---
+  const jarTilt = Math.sin(world.jarTiltAnim * PI) * 0.55;
+  const MJar = stackMats[6];
+  M4.identity(MJar);
+  M4.translate(MJar, MJar, JAR_POS.x, JAR_POS.y + jarTilt * 0.26, JAR_POS.z);
+  M4.rotateZ(MJar, MJar, jarTilt);
+
+  // Grain contents visible inside jar
+  M4.copy(tmpMat, MJar);
+  M4.translate(tmpMat, tmpMat, 0, 0.23, 0);
+  drawMesh(MESH.jarContents, tmpMat, {
+    albedo: TEX.wheat, normal: TEX.beddingNorm, texScale: [3, 2],
+    color: [0.98, 0.86, 0.52, 1], roughness: 0.62
+  });
+  // Cork lid (pops slightly up when pouring!)
+  M4.copy(tmpMat, MJar);
+  M4.translate(tmpMat, tmpMat, jarTilt * 0.12, 0.64 + jarTilt * 0.22, 0);
+  M4.rotateZ(tmpMat, tmpMat, -jarTilt * 0.5);
+  drawMesh(MESH.cork, tmpMat, {
+    albedo: TEX.cork, normal: TEX.corkNorm, roughness: 0.86
+  });
+
+  // --- 14. Warm Twilight Bedside Table Lamp ---
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, LAMP_POS.x, LAMP_POS.y, LAMP_POS.z);
+  drawMesh(MESH.lampBase, tmpMat, {
+    albedo: TEX.ceramic, normal: TEX.ceramicNorm,
+    color: [0.92, 0.72, 0.62, 1], roughness: 0.26, clearcoat: 0.55
+  });
+  // Brass neck stem
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, LAMP_POS.x, LAMP_POS.y + 0.88, LAMP_POS.z);
+  M4.scale(tmpMat, tmpMat, 0.036, 0.24, 0.036);
+  drawMesh(MESH.cyl, tmpMat, { color: [0.88, 0.72, 0.36, 1], roughness: 0.25, metallic: 0.85 });
+  // Glowing Pleated Linen Lamp Shade
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, LAMP_POS.x, LAMP_POS.y + 0.92, LAMP_POS.z);
+  const g = world.lampGlow;
+  drawMesh(MESH.lampShade, tmpMat, {
+    albedo: TEX.linen, normal: TEX.linenNorm, texScale: [4, 2],
+    color: [1.0, 0.95, 0.86, 1], roughness: 0.82,
+    sss: [0.95, 0.62, 0.28],
+    emissive: [1.15 * g, 0.72 * g, 0.28 * g]
+  });
+  // Tiny dangling brass pull-chain + bead (bounces when clicked!)
+  const pullDrop = Math.sin(world.lampPullAnim * PI) * 0.14;
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, LAMP_POS.x - 0.14, LAMP_POS.y + 0.76 - pullDrop * 0.5, LAMP_POS.z + 0.14);
+  M4.scale(tmpMat, tmpMat, 0.008, 0.32 + pullDrop, 0.008);
+  drawMesh(MESH.cyl, tmpMat, { color: [0.88, 0.72, 0.36, 1], roughness: 0.25, metallic: 0.9, noShadow: true });
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, LAMP_POS.x - 0.14, LAMP_POS.y + 0.60 - pullDrop, LAMP_POS.z + 0.14);
+  M4.scale(tmpMat, tmpMat, 0.026, 0.034, 0.026);
+  drawMesh(MESH.sphereLow, tmpMat, { color: [0.95, 0.78, 0.42, 1], roughness: 0.22, metallic: 0.9, noShadow: true });
+
+  // --- 15. Instanced Shavings, Loose Grains, Sunflower Seeds & Stalk Kernels ---
+  drawInstancedMesh(instShavings, {
+    albedo: TEX.birch, normal: TEX.birchNorm, roughness: 0.88, noShadow: true
+  });
+  drawInstancedMesh(instWheatGrains, {
+    albedo: TEX.wheat, normal: TEX.wheatNorm, roughness: 0.44, clearcoat: 0.18
+  });
+  drawInstancedMesh(instSunGrains, {
+    albedo: TEX.sunflower, roughness: 0.36, clearcoat: 0.25
+  });
+  drawInstancedMesh(instStalkKernels, {
+    albedo: TEX.wheat, normal: TEX.wheatNorm, roughness: 0.48
+  });
+
+  // --- 16. The Star: Golden Hamster! ---
+  drawHamster(false);
+}
+
+function drawTranslucentAndFX() {
+  gl.enable(gl.BLEND);
+  gl.depthMask(false);
+
+  // A. Standard Alpha Blending: Rippling Water, Crystal Glass Panels, Glass Jar, Hamster Whiskers
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  // Rippling Water Surface in Stoneware Dish
+  gl.useProgram(waterProg.prog);
+  gl.uniformMatrix4fv(waterProg.u.uVP, false, world.vpMat);
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, WATER_POS.x, WATER_POS.y + 0.11, WATER_POS.z);
+  gl.uniformMatrix4fv(waterProg.u.uModel, false, tmpMat);
+  gl.uniform1f(waterProg.u.uTime, world.time);
+  gl.uniform1f(waterProg.u.uRippleAge, world.waterRippleAge);
+  gl.uniform3fv(waterProg.u.uCamPos, world.camPos);
+  gl.uniform3fv(waterProg.u.uSunColor, world.sunColor);
+  gl.uniform3fv(waterProg.u.uSkyColor, world.skyColor);
+  gl.bindVertexArray(MESH.waterDisk.vao);
+  gl.drawElements(gl.TRIANGLES, MESH.waterDisk.count, MESH.waterDisk.idxType, 0);
+
+  // PBR Translucent Pass (glass jar shell, subtle habitat glass walls, hamster whiskers)
+  gl.useProgram(pbrProg.prog);
+  setGlobalPBRUniforms(pbrProg);
+
+  // Hamster whiskers
+  drawHamster(true);
+
+  // Glass Wheat Jar outer shell
+  const jarTilt = Math.sin(world.jarTiltAnim * PI) * 0.55;
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, JAR_POS.x, JAR_POS.y + jarTilt * 0.26, JAR_POS.z);
+  M4.rotateZ(tmpMat, tmpMat, jarTilt);
+  drawMesh(MESH.jar, tmpMat, {
+    color: [0.95, 0.98, 1.0, 0.28], roughness: 0.05, clearcoat: 0.95, noShadow: true
+  });
+
+  // Subtle low crystal-clear front & side enclosure glass panes (subtle rim shimmer only!)
+  const glassOpts = { color: [0.95, 0.98, 1.0, 0.085], roughness: 0.05, clearcoat: 0.85, noShadow: true };
+  M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, 0, 0.44, 1.72); M4.scale(tmpMat, tmpMat, 5.18, 0.50, 0.02);
+  drawMesh(MESH.box, tmpMat, glassOpts);
+  for (const sx of [-2.66, 2.66]) {
+    M4.identity(tmpMat); M4.translate(tmpMat, tmpMat, sx, 0.62, -0.05); M4.scale(tmpMat, tmpMat, 0.02, 0.54, 3.36);
+    drawMesh(MESH.box, tmpMat, glassOpts);
+  }
+
+  // B. Additive Volumetric Sunbeams, Lamp Glow Halo, Floating Dust Motes & Cozy Sparkles!
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.useProgram(fxProg.prog);
+  gl.uniformMatrix4fv(fxProg.u.uVP, false, world.vpMat);
+  gl.bindVertexArray(MESH.plane.vao);
+
+  // 1. Slanted Golden-Hour Volumetric Sunbeams streaming from the window
+  const beamVis = smoothstep(0.85, 0.12, world.dusk) * 0.13;
+  if (beamVis > 0.004) {
+    gl.uniform1i(fxProg.u.uMode, 0);
+    for (let b = 0; b < 3; b++) {
+      M4.identity(tmpMat);
+      M4.translate(tmpMat, tmpMat, -1.2 + b * 1.15, 1.55, -1.35 + b * 0.12);
+      M4.rotateY(tmpMat, tmpMat, 0.12);
+      M4.rotateZ(tmpMat, tmpMat, -0.46);
+      M4.rotateX(tmpMat, tmpMat, 0.28);
+      M4.scale(tmpMat, tmpMat, 1.25 + b * 0.15, 3.8, 1.0);
+      gl.uniformMatrix4fv(fxProg.u.uModel, false, tmpMat);
+      gl.uniform4f(fxProg.u.uColor, world.sunColor[0], world.sunColor[1] * 0.88, world.sunColor[2] * 0.65, beamVis * (1.0 - b * 0.14));
+      gl.drawElements(gl.TRIANGLES, MESH.plane.count, MESH.plane.idxType, 0);
+    }
+  }
+
+  // Billboard basis aligned toward camera
+  gl.uniform1i(fxProg.u.uMode, 1);
+  const camPitch = -Math.atan2(world.camPos[1] - world.camTarget[1], world.camPos[2] - world.camTarget[2]);
+
+  // 2. Warm Bedside Lamp Soft Aura Halo
+  if (world.lampGlow > 0.02) {
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, LAMP_POS.x, LAMP_POS.y + 1.24, LAMP_POS.z + 0.15);
+    M4.rotateX(tmpMat, tmpMat, camPitch);
+    M4.scale(tmpMat, tmpMat, 1.85, 1.85, 1.0);
+    gl.uniformMatrix4fv(fxProg.u.uModel, false, tmpMat);
+    gl.uniform4f(fxProg.u.uColor, 1.0, 0.68, 0.28, 0.24 * world.lampGlow);
+    gl.drawElements(gl.TRIANGLES, MESH.plane.count, MESH.plane.idxType, 0);
+  }
+
+  // 3. Drifting Golden Sunbeam Dust Motes
+  const moteAlpha = lerp(0.45, 0.18, world.dusk) + world.lampGlow * 0.12;
+  for (let i = 0; i < dustMotes.length; i++) {
+    const m = dustMotes[i];
+    const mx = m.x + Math.sin(world.time * m.speed + m.phase) * 0.22 + world.breezeAnim * 0.15;
+    const my = m.y + Math.cos(world.time * m.speed * 0.8 + m.phase) * 0.14;
+    const mz = m.z + Math.sin(world.time * m.speed * 0.6 + m.phase * 1.4) * 0.16;
+    const pulse = 0.55 + 0.45 * Math.sin(world.time * 1.7 + m.phase);
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, mx, my, mz);
+    M4.rotateX(tmpMat, tmpMat, camPitch);
+    M4.scale(tmpMat, tmpMat, m.size, m.size, 1.0);
+    gl.uniformMatrix4fv(fxProg.u.uModel, false, tmpMat);
+    gl.uniform4f(fxProg.u.uColor, 1.0, 0.88, 0.64, moteAlpha * pulse);
+    gl.drawElements(gl.TRIANGLES, MESH.plane.count, MESH.plane.idxType, 0);
+  }
+
+  // 4. Warm Organic Petting / Nibbling / Discovery Sparkles
+  for (let i = 0; i < sparkles.length; i++) {
+    const sp = sparkles[i];
+    const t = sp.life / sp.maxLife;
+    const a = Math.sin(t * PI) * 0.85;
+    const sc = sp.size * (0.6 + 0.6 * Math.sin(t * PI));
+    M4.identity(tmpMat);
+    M4.translate(tmpMat, tmpMat, sp.x, sp.y, sp.z);
+    M4.rotateX(tmpMat, tmpMat, camPitch);
+    M4.scale(tmpMat, tmpMat, sc, sc, 1.0);
+    gl.uniformMatrix4fv(fxProg.u.uModel, false, tmpMat);
+    gl.uniform4f(fxProg.u.uColor, sp.color[0], sp.color[1], sp.color[2], a);
+    gl.drawElements(gl.TRIANGLES, MESH.plane.count, MESH.plane.idxType, 0);
+  }
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+// ============================================================================
+// 14. MAIN RENDER & ANIMATION LOOP
+// ============================================================================
+let dpr = 1;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+  const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+const lightView = M4.create();
+const lightProj = M4.create();
+
+function updateCamera(dt) {
+  const aspect = canvas.width / Math.max(1, canvas.height);
+  // Responsive framing so every interactive toy (basket, hamster, bowl, wheel, house, jar, lamp) stays comfortably visible on phones, tablets & desktop!
+  const pullBack = aspect < 1.35 ? lerp(1.0, 1.72, clamp((1.35 - aspect) / 0.85, 0, 1)) : 1.0;
+
+  // Subtle living-room breathing & gentle gaze toward the hamster
+  const swayX = Math.sin(world.time * 0.28) * 0.08 + ham.x * 0.14;
+  const swayY = Math.cos(world.time * 0.22) * 0.04;
+  const wantPosX = swayX;
+  const wantPosY = (3.55 + swayY) * lerp(1.0, 1.24, pullBack - 1.0);
+  const wantPosZ = 5.65 * pullBack;
+
+  world.camPos[0] = damp(world.camPos[0], wantPosX, 2.5, dt);
+  world.camPos[1] = damp(world.camPos[1], wantPosY, 2.5, dt);
+  world.camPos[2] = damp(world.camPos[2], wantPosZ, 2.5, dt);
+
+  world.camTarget[0] = damp(world.camTarget[0], ham.x * 0.18, 2.5, dt);
+  world.camTarget[1] = 0.62;
+  world.camTarget[2] = -0.18;
+
+  const fovy = (aspect < 1.0 ? 44 : 37) * PI / 180;
+  M4.perspective(world.projMat, fovy, aspect, 0.2, 32.0);
+  M4.lookAt(world.viewMat, world.camPos, world.camTarget, [0, 1, 0]);
+  M4.mul(world.vpMat, world.projMat, world.viewMat);
+  M4.invert(world.invVPMat, world.vpMat);
+
+  // Tight orthographic shadow frustum aligned to sunset directional light
+  const sd = world.sunDir;
+  M4.lookAt(lightView, [sd[0] * 7.5, sd[1] * 7.5, sd[2] * 7.5], [0, 0.2, -0.1], [0, 1, 0]);
+  M4.ortho(lightProj, -3.7, 3.7, -3.0, 3.2, 1.0, 16.0);
+  M4.mul(world.lightVP, lightProj, lightView);
+}
+
+function renderFrame() {
+  packAllInstances();
+
+  // --- PASS 1: Shadow Depth Map ---
+  activePass = 'shadow';
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.FRONT); // eliminates shadow acne cleanly
+
+  gl.useProgram(shadowProg.prog);
+  gl.uniformMatrix4fv(shadowProg.u.uLightVP, false, world.lightVP);
+  drawOpaqueScene();
+
+  gl.cullFace(gl.BACK);
+  gl.disable(gl.CULL_FACE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  // --- PASS 2: Main Perspective Scene ---
+  activePass = 'pbr';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.11, 0.08, 0.07, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+
+  // 2a. Twilight Sky Window Backdrop (behind window opening at z = -3.85)
+  gl.useProgram(skyProg.prog);
+  gl.uniformMatrix4fv(skyProg.u.uVP, false, world.vpMat);
+  M4.identity(tmpMat);
+  M4.translate(tmpMat, tmpMat, -0.1, 2.45, -3.85);
+  M4.scale(tmpMat, tmpMat, 5.2, 3.75, 1.0);
+  gl.uniformMatrix4fv(skyProg.u.uModel, false, tmpMat);
+  gl.uniform1f(skyProg.u.uTime, world.time);
+  gl.uniform1f(skyProg.u.uDusk, world.dusk);
+  gl.uniform3fv(skyProg.u.uSkyZenith, world.skyZenith);
+  gl.uniform3fv(skyProg.u.uSkyMid, world.skyMid);
+  gl.uniform3fv(skyProg.u.uSkyHorizon, world.skyHorizon);
+  gl.bindVertexArray(MESH.plane.vao);
+  gl.drawElements(gl.TRIANGLES, MESH.plane.count, MESH.plane.idxType, 0);
+
+  // 2b. Opaque PBR 3D World + Hamster
+  gl.useProgram(pbrProg.prog);
+  setGlobalPBRUniforms(pbrProg);
+  drawOpaqueScene();
+
+  // 2c. Translucent Glass, Rippling Water, Whiskers & Additive Sunbeams / Sparkles
+  drawTranslucentAndFX();
+}
+
+let lastNow = performance.now();
+function tick(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - lastNow) * 0.001));
+  lastNow = now;
+  world.time += dt;
+
+  updateAtmosphere(dt);
+  updateShavingsAndGrains(dt);
+  updateHamster(dt);
+  updateCamera(dt);
+  renderFrame();
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+})();
+</script>
+</body>
+</html>
