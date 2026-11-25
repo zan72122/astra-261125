@@ -12,12 +12,9 @@ concurrency:
   group: pages
   cancel-in-progress: false
 jobs:
-  deploy:
+  build:
     if: github.repository_owner == 'zan72122'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: Refuse if games disappeared
@@ -29,5 +26,13 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
+  deploy:
+    if: github.repository_owner == 'zan72122'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
