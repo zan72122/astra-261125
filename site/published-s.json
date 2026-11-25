@@ -1,1 +1,51 @@
-{"games": ["s-26a-v1", "s-27a-v1", "s-28a-v1", "s-29a-v1", "s-30a-v1", "s-31a-v1", "s-32a-v1", "s-33a-v1"], "thumbs": {"s-26a-v1": {"file": "thumbs/s-26a-v1.jpg", "kind": "real"}, "s-27a-v1": {"file": "thumbs/s-27a-v1.jpg", "kind": "real"}, "s-28a-v1": {"file": "thumbs/s-28a-v1.jpg", "kind": "real"}, "s-29a-v1": {"file": "thumbs/s-29a-v1.jpg", "kind": "real"}, "s-30a-v1": {"file": "thumbs/s-30a-v1.jpg", "kind": "real"}, "s-31a-v1": {"file": "thumbs/s-31a-v1.jpg", "kind": "real"}, "s-32a-v1": {"file": "thumbs/s-32a-v1.jpg", "kind": "real"}, "s-33a-v1": {"file": "thumbs/s-33a-v1.jpg", "kind": "real"}}}
+{
+ "games": [
+  "s-26a-v1",
+  "s-27a-v1",
+  "s-28a-gem-v1",
+  "s-28a-v1",
+  "s-29a-v1",
+  "s-30a-v1",
+  "s-31a-v1",
+  "s-32a-v1",
+  "s-33a-v1"
+ ],
+ "thumbs": {
+  "s-28a-gem-v1": {
+   "file": "thumbs/s-28a-gem-v1.jpg",
+   "kind": "real"
+  },
+  "s-26a-v1": {
+   "file": "thumbs/s-26a-v1.jpg",
+   "kind": "real"
+  },
+  "s-27a-v1": {
+   "file": "thumbs/s-27a-v1.jpg",
+   "kind": "real"
+  },
+  "s-28a-v1": {
+   "file": "thumbs/s-28a-v1.jpg",
+   "kind": "real"
+  },
+  "s-29a-v1": {
+   "file": "thumbs/s-29a-v1.jpg",
+   "kind": "real"
+  },
+  "s-30a-v1": {
+   "file": "thumbs/s-30a-v1.jpg",
+   "kind": "real"
+  },
+  "s-31a-v1": {
+   "file": "thumbs/s-31a-v1.jpg",
+   "kind": "real"
+  },
+  "s-32a-v1": {
+   "file": "thumbs/s-32a-v1.jpg",
+   "kind": "real"
+  },
+  "s-33a-v1": {
+   "file": "thumbs/s-33a-v1.jpg",
+   "kind": "real"
+  }
+ }
+}

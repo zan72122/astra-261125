@@ -1,0 +1,3823 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta name="robots" content="noindex,nofollow">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>ころころこねこ</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #2b2119;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+'use strict';
+
+// ============================================================================
+// 1. MATH UTILITIES (Column-major 4x4 matrices & 3D vectors)
+// ============================================================================
+const V3 = {
+  create: (x = 0, y = 0, z = 0) => new Float32Array([x, y, z]),
+  set: (o, x, y, z) => { o[0] = x; o[1] = y; o[2] = z; return o; },
+  sub: (o, a, b) => { o[0] = a[0] - b[0]; o[1] = a[1] - b[1]; o[2] = a[2] - b[2]; return o; },
+  add: (o, a, b) => { o[0] = a[0] + b[0]; o[1] = a[1] + b[1]; o[2] = a[2] + b[2]; return o; },
+  scale: (o, a, s) => { o[0] = a[0] * s; o[1] = a[1] * s; o[2] = a[2] * s; return o; },
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (o, a, b) => {
+    const ax = a[0], ay = a[1], az = a[2], bx = b[0], by = b[1], bz = b[2];
+    o[0] = ay * bz - az * by;
+    o[1] = az * bx - ax * bz;
+    o[2] = ax * by - ay * bx;
+    return o;
+  },
+  len: (a) => Math.hypot(a[0], a[1], a[2]),
+  norm: (o, a) => {
+    const l = Math.hypot(a[0], a[1], a[2]) || 1;
+    o[0] = a[0] / l; o[1] = a[1] / l; o[2] = a[2] / l;
+    return o;
+  }
+};
+
+const M4 = {
+  create: () => {
+    const m = new Float32Array(16);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  identity: (m) => {
+    m.fill(0);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  copy: (o, a) => { o.set(a); return o; },
+  mul: (o, a, b) => {
+    const t = (o === a || o === b) ? new Float32Array(16) : o;
+    for (let c = 0; c < 4; c++) {
+      const b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+      t[c * 4]     = a[0] * b0 + a[4] * b1 + a[8]  * b2 + a[12] * b3;
+      t[c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9]  * b2 + a[13] * b3;
+      t[c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+      t[c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+    }
+    if (t !== o) o.set(t);
+    return o;
+  },
+  translate: (m, x, y, z) => {
+    m[12] += m[0] * x + m[4] * y + m[8]  * z;
+    m[13] += m[1] * x + m[5] * y + m[9]  * z;
+    m[14] += m[2] * x + m[6] * y + m[10] * z;
+    m[15] += m[3] * x + m[7] * y + m[11] * z;
+    return m;
+  },
+  scale: (m, x, y, z) => {
+    m[0] *= x; m[1] *= x; m[2] *= x; m[3] *= x;
+    m[4] *= y; m[5] *= y; m[6] *= y; m[7] *= y;
+    m[8] *= z; m[9] *= z; m[10] *= z; m[11] *= z;
+    return m;
+  },
+  rotX: (m, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+    const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
+    m[4] = a10 * c + a20 * s; m[5] = a11 * c + a21 * s; m[6] = a12 * c + a22 * s; m[7] = a13 * c + a23 * s;
+    m[8] = a20 * c - a10 * s; m[9] = a21 * c - a11 * s; m[10] = a22 * c - a12 * s; m[11] = a23 * c - a13 * s;
+    return m;
+  },
+  rotY: (m, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
+    const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
+    m[0] = a00 * c - a20 * s; m[1] = a01 * c - a21 * s; m[2] = a02 * c - a22 * s; m[3] = a03 * c - a23 * s;
+    m[8] = a00 * s + a20 * c; m[9] = a01 * s + a21 * c; m[10] = a02 * s + a22 * c; m[11] = a03 * s + a23 * c;
+    return m;
+  },
+  rotZ: (m, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
+    const a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+    m[0] = a00 * c + a10 * s; m[1] = a01 * c + a11 * s; m[2] = a02 * c + a12 * s; m[3] = a03 * c + a13 * s;
+    m[4] = a10 * c - a00 * s; m[5] = a11 * c - a01 * s; m[6] = a12 * c - a02 * s; m[7] = a13 * c - a03 * s;
+    return m;
+  },
+  perspective: (o, fovy, aspect, near, far) => {
+    const f = 1 / Math.tan(fovy * 0.5);
+    const nf = 1 / (near - far);
+    o.fill(0);
+    o[0] = f / aspect;
+    o[5] = f;
+    o[10] = (far + near) * nf;
+    o[11] = -1;
+    o[14] = 2 * far * near * nf;
+    return o;
+  },
+  ortho: (o, l, r, b, t, n, f) => {
+    const lr = 1 / (l - r), bt = 1 / (b - t), nf = 1 / (n - f);
+    o.fill(0);
+    o[0] = -2 * lr;
+    o[5] = -2 * bt;
+    o[10] = 2 * nf;
+    o[12] = (l + r) * lr;
+    o[13] = (t + b) * bt;
+    o[14] = (f + n) * nf;
+    o[15] = 1;
+    return o;
+  },
+  lookAt: (o, eye, center, up) => {
+    const z = V3.norm(V3.create(), V3.sub(V3.create(), eye, center));
+    const x = V3.norm(V3.create(), V3.cross(V3.create(), up, z));
+    const y = V3.cross(V3.create(), z, x);
+    o[0] = x[0]; o[1] = y[0]; o[2]  = z[0]; o[3]  = 0;
+    o[4] = x[1]; o[5] = y[1]; o[6]  = z[1]; o[7]  = 0;
+    o[8] = x[2]; o[9] = y[2]; o[10] = z[2]; o[11] = 0;
+    o[12] = -V3.dot(x, eye);
+    o[13] = -V3.dot(y, eye);
+    o[14] = -V3.dot(z, eye);
+    o[15] = 1;
+    return o;
+  },
+  invert: (o, a) => {
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3],
+          a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7],
+          a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11],
+          a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+    const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10,
+          b03 = a01 * a12 - a02 * a11, b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12,
+          b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30, b08 = a20 * a33 - a23 * a30,
+          b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    if (!det) return null;
+    det = 1 / det;
+    o[0]  = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+    o[1]  = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+    o[2]  = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+    o[3]  = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+    o[4]  = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+    o[5]  = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+    o[6]  = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+    o[7]  = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+    o[8]  = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+    o[9]  = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+    o[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+    o[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+    o[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+    o[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+    o[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+    o[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+    return o;
+  },
+  normalMat3: (o9, m) => {
+    const a00 = m[0], a01 = m[1], a02 = m[2],
+          a10 = m[4], a11 = m[5], a12 = m[6],
+          a20 = m[8], a21 = m[9], a22 = m[10];
+    const b01 = a22 * a11 - a12 * a21;
+    const b11 = -a22 * a10 + a12 * a20;
+    const b21 = a21 * a10 - a11 * a20;
+    let det = a00 * b01 + a01 * b11 + a02 * b21;
+    if (Math.abs(det) < 1e-8) {
+      o9[0] = 1; o9[1] = 0; o9[2] = 0;
+      o9[3] = 0; o9[4] = 1; o9[5] = 0;
+      o9[6] = 0; o9[7] = 0; o9[8] = 1;
+      return o9;
+    }
+    det = 1 / det;
+    // Inverse-transpose in column-major order
+    o9[0] = b01 * det;
+    o9[1] = b11 * det;
+    o9[2] = b21 * det;
+    o9[3] = (-a22 * a01 + a02 * a21) * det;
+    o9[4] = (a22 * a00 - a02 * a20) * det;
+    o9[5] = (-a21 * a00 + a01 * a20) * det;
+    o9[6] = (a12 * a01 - a02 * a11) * det;
+    o9[7] = (-a12 * a00 + a02 * a10) * det;
+    o9[8] = (a11 * a00 - a01 * a10) * det;
+    return o9;
+  },
+  transformPoint: (m, p) => {
+    const x = p[0], y = p[1], z = p[2];
+    const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
+    return [
+      (m[0] * x + m[4] * y + m[8]  * z + m[12]) / w,
+      (m[1] * x + m[5] * y + m[9]  * z + m[13]) / w,
+      (m[2] * x + m[6] * y + m[10] * z + m[14]) / w
+    ];
+  }
+};
+
+const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const wrapAngle = (a) => {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+};
+const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt));
+const dampAngle = (a, b, lambda, dt) => a + wrapAngle(b - a) * (1 - Math.exp(-lambda * dt));
+
+// ============================================================================
+// 2. PROCEDURAL WEB AUDIO FOLEY & WARM MORNING SOUNDSCAPE
+// ============================================================================
+class SoundEngine {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.noiseBuf = null;
+    this.purrGain = null;
+    this.purrTarget = 0;
+    this.purrCurrent = 0;
+    this.lastClickTime = 0;
+    this.nextBirdTime = 3.5;
+  }
+
+  unlock() {
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.72;
+    this.master.connect(this.ctx.destination);
+
+    // Pre-generate pink/white noise buffer
+    const sr = this.ctx.sampleRate;
+    const len = sr * 2;
+    this.noiseBuf = this.ctx.createBuffer(1, len, sr);
+    const data = this.noiseBuf.getChannelData(0);
+    let b0 = 0, b1 = 0, b2 = 0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      b0 = 0.997 * b0 + w * 0.029;
+      b1 = 0.985 * b1 + w * 0.032;
+      b2 = 0.950 * b2 + w * 0.048;
+      data[i] = (b0 + b1 + b2 + w * 0.18) * 0.9;
+    }
+
+    // Continuous gentle kitten purr synthesizer (quiet until purrTarget > 0)
+    const purrOsc = this.ctx.createOscillator();
+    purrOsc.type = 'sawtooth';
+    purrOsc.frequency.value = 26.5;
+
+    const purrFilter = this.ctx.createBiquadFilter();
+    purrFilter.type = 'bandpass';
+    purrFilter.frequency.value = 115;
+    purrFilter.Q.value = 2.2;
+
+    const purrBreath = this.ctx.createOscillator();
+    purrBreath.type = 'sine';
+    purrBreath.frequency.value = 0.55; // breathing cycle modulation
+
+    const breathDepth = this.ctx.createGain();
+    breathDepth.gain.value = 0.35;
+
+    const purrMod = this.ctx.createGain();
+    purrMod.gain.value = 0.75;
+    purrBreath.connect(breathDepth);
+    breathDepth.connect(purrMod.gain);
+
+    // Add soft airy texture to purr
+    const airSrc = this.ctx.createBufferSource();
+    airSrc.buffer = this.noiseBuf;
+    airSrc.loop = true;
+    const airFilter = this.ctx.createBiquadFilter();
+    airFilter.type = 'lowpass';
+    airFilter.frequency.value = 240;
+    const airGain = this.ctx.createGain();
+    airGain.gain.value = 0.25;
+    airSrc.connect(airFilter);
+    airFilter.connect(airGain);
+
+    this.purrGain = this.ctx.createGain();
+    this.purrGain.gain.value = 0.0001;
+
+    purrOsc.connect(purrFilter);
+    purrFilter.connect(purrMod);
+    airGain.connect(purrMod);
+    purrMod.connect(this.purrGain);
+    this.purrGain.connect(this.master);
+
+    purrOsc.start();
+    purrBreath.start();
+    airSrc.start();
+  }
+
+  update(dt, time) {
+    if (!this.ctx || !this.purrGain) return;
+    this.purrCurrent = damp(this.purrCurrent, this.purrTarget, 4.5, dt);
+    this.purrGain.gain.setTargetAtTime(Math.max(0.0001, this.purrCurrent * 0.24), this.ctx.currentTime, 0.08);
+    if (time > this.nextBirdTime) {
+      this.nextBirdTime = time + 9 + Math.random() * 14;
+      this.playMorningBird();
+    }
+  }
+
+  playMorningBird() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    const notes = 2 + (Math.random() < 0.5 ? 1 : 0);
+    for (let i = 0; i < notes; i++) {
+      const nt = t + i * 0.16;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      const base = 2450 + Math.random() * 650;
+      osc.frequency.setValueAtTime(base, nt);
+      osc.frequency.exponentialRampToValueAtTime(base * 1.24, nt + 0.055);
+      osc.frequency.exponentialRampToValueAtTime(base * 0.94, nt + 0.11);
+      g.gain.setValueAtTime(0.0001, nt);
+      g.gain.linearRampToValueAtTime(0.018, nt + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, nt + 0.12);
+      osc.connect(g); g.connect(this.master);
+      osc.start(nt); osc.stop(nt + 0.14);
+    }
+  }
+
+  playCorkPop(opening = true) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    // Hollow pop
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    if (opening) {
+      osc.frequency.setValueAtTime(165, t);
+      osc.frequency.exponentialRampToValueAtTime(640, t + 0.048);
+      osc.frequency.exponentialRampToValueAtTime(240, t + 0.12);
+    } else {
+      osc.frequency.setValueAtTime(420, t);
+      osc.frequency.exponentialRampToValueAtTime(155, t + 0.08);
+    }
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.32, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.16);
+
+    // Subtle glass ring
+    const ring = this.ctx.createOscillator();
+    const rg = this.ctx.createGain();
+    ring.type = 'sine';
+    ring.frequency.setValueAtTime(1480, t);
+    rg.gain.setValueAtTime(0.038, t);
+    rg.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    ring.connect(rg); rg.connect(this.master);
+    ring.start(t); ring.stop(t + 0.27);
+  }
+
+  playKibbleClick(surface = 'wood', intensity = 0.6) {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastClickTime < 0.024) return;
+    this.lastClickTime = now;
+    const vol = clamp(intensity, 0.08, 1.0);
+
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    if (surface === 'ceramic') {
+      osc.type = 'triangle';
+      const f = 1750 + Math.random() * 550;
+      osc.frequency.setValueAtTime(f, now);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.72, now + 0.045);
+      g.gain.setValueAtTime(0.09 * vol, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
+    } else if (surface === 'ramp') {
+      osc.type = 'sine';
+      const f = 680 + Math.random() * 260;
+      osc.frequency.setValueAtTime(f, now);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.75, now + 0.032);
+      g.gain.setValueAtTime(0.11 * vol, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.042);
+    } else {
+      osc.type = 'sine';
+      const f = 520 + Math.random() * 220;
+      osc.frequency.setValueAtTime(f, now);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.65, now + 0.028);
+      g.gain.setValueAtTime(0.085 * vol, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.036);
+    }
+    osc.connect(g); g.connect(this.master);
+    osc.start(now); osc.stop(now + 0.065);
+
+    // Dry tick noise
+    if (this.noiseBuf) {
+      const n = this.ctx.createBufferSource();
+      n.buffer = this.noiseBuf;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = surface === 'ceramic' ? 3200 : 1850;
+      bp.Q.value = 3.2;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.075 * vol, now);
+      ng.gain.exponentialRampToValueAtTime(0.0001, now + 0.025);
+      n.connect(bp); bp.connect(ng); ng.connect(this.master);
+      n.start(now, Math.random(), 0.04);
+    }
+  }
+
+  playScoopRustle() {
+    if (!this.ctx || !this.noiseBuf) return;
+    const t = this.ctx.currentTime;
+    for (let i = 0; i < 6; i++) {
+      const st = t + i * 0.028 + Math.random() * 0.012;
+      const n = this.ctx.createBufferSource();
+      n.buffer = this.noiseBuf;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1400 + Math.random() * 1400;
+      bp.Q.value = 4.5;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.001, st);
+      g.gain.linearRampToValueAtTime(0.09, st + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.04);
+      n.connect(bp); bp.connect(g); g.connect(this.master);
+      n.start(st, Math.random(), 0.05);
+    }
+  }
+
+  playCrunch() {
+    if (!this.ctx || !this.noiseBuf) return;
+    const t = this.ctx.currentTime;
+    // Cute double-crunch "kari-kari"
+    for (let i = 0; i < 2; i++) {
+      const ct = t + i * 0.062;
+      const n = this.ctx.createBufferSource();
+      n.buffer = this.noiseBuf;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2100 + Math.random() * 850;
+      bp.Q.value = 2.4;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.001, ct);
+      g.gain.linearRampToValueAtTime(0.16, ct + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, ct + 0.055);
+      n.connect(bp); bp.connect(g); g.connect(this.master);
+      n.start(ct, Math.random(), 0.065);
+    }
+  }
+
+  playMeow(mood = 'sweet') {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const dur = mood === 'chirp' ? 0.19 : (mood === 'stretch' ? 0.36 : 0.31);
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+
+    const fStart = mood === 'chirp' ? 660 : (mood === 'happy' ? 610 : 560);
+    const fPeak  = mood === 'chirp' ? 980 : (mood === 'stretch' ? 760 : 810);
+    const fEnd   = mood === 'chirp' ? 880 : 540;
+
+    osc.frequency.setValueAtTime(fStart, t);
+    osc.frequency.exponentialRampToValueAtTime(fPeak, t + dur * 0.42);
+    osc.frequency.exponentialRampToValueAtTime(fEnd, t + dur);
+
+    // Dual soft vocal formants for gentle kitten timbre
+    const f1 = this.ctx.createBiquadFilter();
+    f1.type = 'bandpass';
+    f1.frequency.setValueAtTime(1150, t);
+    f1.frequency.exponentialRampToValueAtTime(1750, t + dur * 0.45);
+    f1.frequency.exponentialRampToValueAtTime(1250, t + dur);
+    f1.Q.value = 3.6;
+
+    const f2 = this.ctx.createBiquadFilter();
+    f2.type = 'lowpass';
+    f2.frequency.value = 2600;
+
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.11, t + 0.045);
+    g.gain.setValueAtTime(0.095, t + dur * 0.6);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.04);
+
+    osc.connect(f1); f1.connect(f2); f2.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + dur + 0.06);
+  }
+
+  playWaterDrop(soft = false) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    const base = soft ? 620 + Math.random() * 180 : 480 + Math.random() * 240;
+    osc.frequency.setValueAtTime(base, t);
+    osc.frequency.exponentialRampToValueAtTime(base * 2.15, t + 0.065);
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(soft ? 0.065 : 0.13, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.11);
+  }
+
+  playBell(volume = 0.08) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const freqs = [2480, 3920, 5240];
+    freqs.forEach((f, idx) => {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f * (0.98 + Math.random() * 0.04), t);
+      g.gain.setValueAtTime(volume / (idx + 1), t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24 - idx * 0.05);
+      osc.connect(g); g.connect(this.master);
+      osc.start(t); osc.stop(t + 0.26);
+    });
+  }
+
+  playPrismChime() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const chord = [1046.5, 1318.5, 1568.0, 2093.0];
+    chord.forEach((f, i) => {
+      const st = t + i * 0.055;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f, st);
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.linearRampToValueAtTime(0.055, st + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + 0.65);
+      osc.connect(g); g.connect(this.master);
+      osc.start(st); osc.stop(st + 0.68);
+    });
+  }
+
+  playPawStep() {
+    if (!this.ctx || !this.noiseBuf) return;
+    const t = this.ctx.currentTime;
+    const n = this.ctx.createBufferSource();
+    n.buffer = this.noiseBuf;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 320;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.032, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.035);
+    n.connect(lp); lp.connect(g); g.connect(this.master);
+    n.start(t, Math.random(), 0.045);
+  }
+}
+
+const sound = new SoundEngine();
+
+// ============================================================================
+// 3. WEBGL2 INITIALIZATION & SHADERS
+// ============================================================================
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {
+  antialias: true,
+  alpha: false,
+  powerPreference: 'high-performance'
+});
+
+if (!gl) {
+  // Graceful fallback tint if WebGL2 is truly absent
+  canvas.style.background = '#f3d9b8';
+  return;
+}
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('Shader error:', gl.getShaderInfoLog(s));
+    return null;
+  }
+  return s;
+}
+
+function createProgram(vsSrc, fsSrc) {
+  const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
+  const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+  const p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(p));
+    return null;
+  }
+  return p;
+}
+
+// --- Shadow Pass Shader ---
+const shadowVS = `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aPos;
+uniform mat4 uLightMVP;
+void main() {
+  gl_Position = uLightMVP * vec4(aPos, 1.0);
+}`;
+const shadowFS = `#version 300 es
+precision highp float;
+void main() {}`;
+
+// --- Main PBR + Fur + Eye + Glass + Water Shader ---
+const mainVS = `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNorm;
+layout(location = 2) in vec2 aUv;
+
+uniform mat4 uModel;
+uniform mat4 uViewProj;
+uniform mat4 uLightViewProj;
+uniform mat3 uNormalMat;
+
+out vec3 vWorldPos;
+out vec3 vLocalPos;
+out vec3 vNormal;
+out vec2 vUv;
+out vec4 vShadowCoord;
+
+void main() {
+  vec4 wp = uModel * vec4(aPos, 1.0);
+  vWorldPos = wp.xyz;
+  vLocalPos = aPos;
+  vNormal = normalize(uNormalMat * aNorm);
+  vUv = aUv;
+  vShadowCoord = uLightViewProj * wp;
+  gl_Position = uViewProj * wp;
+}`;
+
+const mainFS = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2DShadow;
+
+in vec3 vWorldPos;
+in vec3 vLocalPos;
+in vec3 vNormal;
+in vec2 vUv;
+in vec4 vShadowCoord;
+
+uniform sampler2D uTex;
+uniform sampler2DShadow uShadowMap;
+
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uSkyColor;
+uniform vec3 uGroundColor;
+uniform float uTime;
+uniform float uWarmth;
+
+uniform vec4 uBaseColor;     // rgb + alpha
+uniform float uRoughness;
+uniform float uMetallic;
+uniform float uRimStrength;
+uniform vec3 uRimColor;
+uniform float uSubsurface;
+uniform vec2 uTexScale;
+uniform int uMatType;        // 0:PBR, 1:Fur, 2:Eye, 3:Glass, 4:Water, 5:FloorSun, 6:EmissiveGlow
+uniform vec4 uExtra;         // Fur: (partMode, sockY, stripeScale, blush) | Eye: (pupilSize, gazeX, gazeY, happy)
+uniform vec4 uRipples[4];    // Water ripples: (x, z, age, strength)
+uniform vec4 uPrismSpot;     // (x, z, activeAlpha, time)
+
+out vec4 fragColor;
+
+// Fast smooth 3D value noise for organic fur & ripples
+float hash31(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float noise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float n000 = hash31(i);
+  float n100 = hash31(i + vec3(1,0,0));
+  float n010 = hash31(i + vec3(0,1,0));
+  float n110 = hash31(i + vec3(1,1,0));
+  float n001 = hash31(i + vec3(0,0,1));
+  float n101 = hash31(i + vec3(1,0,1));
+  float n011 = hash31(i + vec3(0,1,1));
+  float n111 = hash31(i + vec3(1,1,1));
+  return mix(
+    mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+    mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
+    f.z
+  );
+}
+
+float sampleShadow(vec3 N, vec3 L) {
+  vec3 proj = vShadowCoord.xyz / vShadowCoord.w;
+  proj = proj * 0.5 + 0.5;
+  if (proj.x < 0.01 || proj.x > 0.99 || proj.y < 0.01 || proj.y > 0.99 || proj.z > 0.998) {
+    return 1.0;
+  }
+  float ndotl = max(dot(N, L), 0.0);
+  float bias = max(0.0016 * (1.0 - ndotl), 0.0007);
+  float texel = 1.45 / 1024.0;
+  float sum = 0.0;
+  for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+      sum += texture(uShadowMap, vec3(proj.xy + vec2(float(x), float(y)) * texel, proj.z - bias));
+    }
+  }
+  return sum / 9.0;
+}
+
+// Morning window sunlight patch projected onto floor/mat
+float morningWindowMask(vec3 wp) {
+  // Light arrives from left-back window toward right-front
+  float shiftX = wp.x + wp.y * 1.15;
+  float shiftZ = wp.z + wp.y * 0.28;
+  float winX = smoothstep(-2.45, -2.05, shiftX) * (1.0 - smoothstep(1.25, 1.95, shiftX));
+  float winZ = smoothstep(-1.15, -0.78, shiftZ) * (1.0 - smoothstep(1.15, 1.65, shiftZ));
+  // Subtle window mullion bars
+  float barX = 1.0 - 0.38 * exp(-pow((shiftX + 0.25) * 6.5, 2.0));
+  float barZ = 1.0 - 0.35 * exp(-pow((shiftZ - 0.18) * 6.5, 2.0));
+  return winX * winZ * barX * barZ;
+}
+
+// Procedural ginger-tabby + white-socks kitten fur color & normal perturbation
+void evalKittenFur(vec3 lp, vec3 N, out vec3 albedo, out float rough) {
+  int part = int(uExtra.x + 0.5);
+  vec3 gingerMain = vec3(0.87, 0.52, 0.23);
+  vec3 gingerLight = vec3(0.95, 0.72, 0.44);
+  vec3 gingerStripe = vec3(0.56, 0.27, 0.09);
+  vec3 creamWhite = vec3(0.97, 0.94, 0.89);
+  vec3 softPink = vec3(0.93, 0.64, 0.65);
+
+  float furMicro = noise3(lp * 34.0 + vec3(0.0, lp.z * 8.0, 0.0));
+  float furMed = noise3(lp * 11.0);
+  albedo = mix(gingerMain, gingerLight, furMed * 0.42);
+  rough = 0.76 + (furMicro - 0.5) * 0.14;
+
+  if (part == 0) {
+    // Torso: tabby mackerel stripes on back/sides + snowy cream chest bib & belly
+    float wave = sin(lp.z * 17.0 + noise3(lp * 6.0) * 2.2);
+    float stripe = smoothstep(0.28, 0.82, wave);
+    // Dorsal darker spine stripe
+    float spine = smoothstep(0.11, 0.01, abs(lp.x)) * smoothstep(-0.02, 0.18, lp.y);
+    albedo = mix(albedo, gingerStripe, max(stripe * 0.58, spine * 0.65));
+
+    // Cream-white chest bib (+z front) and warm white belly (-y bottom)
+    float chest = smoothstep(0.08, 0.25, lp.z) * smoothstep(0.16, -0.04, lp.y) * smoothstep(0.22, 0.06, abs(lp.x));
+    float belly = smoothstep(-0.04, -0.15, lp.y) * smoothstep(0.22, 0.05, abs(lp.x));
+    float whiteMask = clamp(max(chest, belly) + (furMicro - 0.5) * 0.18, 0.0, 1.0);
+    albedo = mix(albedo, creamWhite, smoothstep(0.25, 0.68, whiteMask));
+  } else if (part == 1) {
+    // Head: warm ginger crown, tabby forehead "M" & cheek stripes, white chin/lower muzzle
+    float fx = abs(lp.x);
+    // Forehead tabby stripes forming gentle 'M'
+    float fZone = smoothstep(0.02, 0.14, lp.z) * smoothstep(0.03, 0.16, lp.y);
+    float mBand1 = exp(-pow((fx - 0.028) * 34.0, 2.0));
+    float mBand2 = exp(-pow((fx - 0.085) * 26.0, 2.0));
+    float crownStripes = smoothstep(0.35, 0.8, sin(lp.x * 32.0 + lp.z * 8.0)) * smoothstep(0.08, 0.18, lp.y);
+    float cheekStripe = exp(-pow((lp.y + 0.025) * 24.0, 2.0)) * smoothstep(0.08, 0.17, fx) * smoothstep(-0.04, 0.12, lp.z);
+    float darkM = clamp((mBand1 + mBand2 * 0.9) * fZone + crownStripes * 0.55 + cheekStripe * 0.7, 0.0, 1.0);
+    albedo = mix(albedo, gingerStripe, darkM * 0.62);
+
+    // Light rings around eyes for adorable bright expression
+    float eyeRing = exp(-pow(length(vec2(fx - 0.072, lp.y - 0.015)) * 16.0, 2.0)) * smoothstep(0.08, 0.16, lp.z);
+    albedo = mix(albedo, gingerLight, eyeRing * 0.45);
+
+    // Cream-white lower muzzle & chin
+    float whiteMuzzle = smoothstep(-0.005, -0.075, lp.y) * smoothstep(0.02, 0.13, lp.z) * smoothstep(0.13, 0.04, fx);
+    albedo = mix(albedo, creamWhite, smoothstep(0.2, 0.7, whiteMuzzle + (furMicro - 0.5) * 0.12));
+  } else if (part == 2) {
+    // Leg with adorable crisp WHITE SOCKS! (uExtra.y = sock height threshold in local Y)
+    float stripe = smoothstep(0.3, 0.8, sin(lp.y * 28.0 + furMed * 1.8));
+    albedo = mix(albedo, gingerStripe, stripe * 0.48);
+    float sockLine = uExtra.y + (furMicro - 0.5) * 0.032;
+    float isSock = 1.0 - smoothstep(sockLine - 0.018, sockLine + 0.018, lp.y);
+    albedo = mix(albedo, creamWhite, isSock);
+  } else if (part == 3) {
+    // Ringed tabby tail with creamy tip (uExtra.y = segment index 0..1)
+    float ring = smoothstep(0.25, 0.78, sin((uExtra.y * 5.5 + lp.z * 6.0) * 3.14159));
+    albedo = mix(albedo, gingerStripe, ring * 0.62);
+    float tip = smoothstep(0.84, 0.98, uExtra.y);
+    albedo = mix(albedo, creamWhite, tip * 0.85);
+  } else if (part == 4) {
+    // Outer ginger ear
+    albedo = mix(gingerMain, gingerStripe, smoothstep(0.03, 0.11, lp.y) * 0.42);
+  } else if (part == 5) {
+    // Pure snowy white sock paw / muzzle cushion / chest tuft
+    albedo = mix(creamWhite, vec3(1.0, 0.98, 0.95), furMed * 0.45);
+  } else if (part == 6) {
+    // Cute soft pink nose / inner ear / paw pads (nikukyuu!)
+    albedo = mix(softPink, vec3(0.96, 0.72, 0.73), furMed * 0.35);
+    rough = uExtra.z; // nose is slightly glossy (~0.32), inner ear matte (~0.75)
+  } else if (part == 7) {
+    // Soft ginger upper eyelid with delicate dark feline lash line along bottom rim
+    float lash = smoothstep(-0.004, -0.011, lp.y) * smoothstep(0.01, 0.045, lp.z);
+    albedo = mix(mix(gingerMain, gingerLight, 0.25), vec3(0.24, 0.12, 0.07), lash * 0.85);
+    rough = 0.74;
+  }
+
+  // Soft velvet micro-contrast
+  albedo *= (0.93 + 0.14 * furMicro);
+}
+
+// Expressive lustrous 3D cat eye
+vec3 evalKittenEye(vec3 lp, vec3 N, vec3 V, vec3 L) {
+  // Local space sphere (+z faces forward out of head)
+  float pupilSize = uExtra.x; // 0.18 (bright calm) .. 0.44 (excited/playful!)
+  vec2 gaze = uExtra.yz;
+  vec2 p = lp.xy - gaze * 0.18;
+  float r = length(p);
+
+  // Outer sclera (barely visible warm cream at edges)
+  vec3 col = vec3(0.92, 0.88, 0.82);
+
+  // Rich golden-amber-hazel iris with radial fibers
+  float irisEdge = 0.84;
+  if (r < irisEdge) {
+    float ang = atan(p.y, p.x);
+    float fibers = 0.5 + 0.5 * sin(ang * 26.0 + noise3(vec3(p * 12.0, 1.0)) * 3.0);
+    float t = r / irisEdge;
+    vec3 innerAmber = vec3(0.82, 0.62, 0.20);
+    vec3 midGoldGreen = vec3(0.56, 0.54, 0.22);
+    vec3 limbalDark = vec3(0.14, 0.11, 0.06);
+    col = mix(innerAmber, midGoldGreen, smoothstep(0.25, 0.78, t));
+    col *= (0.86 + 0.26 * fibers);
+    // Warm top shadow from eyelid + bright sunlit lower crescent bounce!
+    float lowerGlow = smoothstep(0.05, -0.55, p.y) * smoothstep(0.85, 0.25, r);
+    col += vec3(0.26, 0.22, 0.08) * lowerGlow;
+    float upperShade = smoothstep(0.15, 0.65, p.y);
+    col *= (1.0 - 0.32 * upperShade);
+    // Dark limbal ring
+    col = mix(col, limbalDark, smoothstep(0.70, 0.83, t));
+
+    // Cat pupil: slightly almond when small, big adorable round orb when dilated!
+    float ovalX = mix(1.55, 1.04, smoothstep(0.20, 0.42, pupilSize));
+    float pr = length(vec2(p.x * ovalX, p.y));
+    float pupilMask = 1.0 - smoothstep(pupilSize - 0.035, pupilSize + 0.025, pr);
+    col = mix(col, vec3(0.025, 0.02, 0.025), pupilMask);
+  }
+
+  // Wet corneal specular catchlights (big window reflection + small secondary sparkle!)
+  vec3 H = normalize(L + V);
+  float spec = pow(max(dot(N, H), 0.0), 140.0) * 1.4;
+  float catch1 = smoothstep(0.17, 0.07, length(p - vec2(-0.24, 0.26)));
+  float catch2 = smoothstep(0.085, 0.025, length(p - vec2(0.22, -0.18)));
+  float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.28;
+
+  col = col * (0.85 + 0.25 * max(dot(N, L), 0.0)) + vec3(1.0, 0.97, 0.90) * (catch1 * 1.15 + catch2 * 0.65 + spec + fres);
+  return col;
+}
+
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(uCamPos - vWorldPos);
+  vec3 L = normalize(uSunDir);
+
+  // --- Special Type 6: Emissive sunlit dust / prism light / steam / god-rays ---
+  if (uMatType == 6) {
+    vec3 col = uBaseColor.rgb;
+    float alpha = uBaseColor.a;
+    if (uExtra.x > 0.5 && uExtra.x < 1.5) {
+      // Soft radial glow orb (dust motes, steam wisps)
+      float d = length(vUv - 0.5) * 2.0;
+      alpha *= smoothstep(1.0, 0.0, d) * smoothstep(1.0, 0.2, d);
+    } else if (uExtra.x >= 1.5 && uExtra.x < 2.5) {
+      // Volumetric morning sunbeam shaft
+      float edgeX = sin(clamp(vUv.x, 0.0, 1.0) * 3.14159);
+      float fadeY = smoothstep(0.0, 0.35, vUv.y) * smoothstep(1.0, 0.15, vUv.y);
+      alpha *= edgeX * edgeX * fadeY;
+    } else if (uExtra.x >= 2.5) {
+      // Dancing iridescent rainbow prism spot on the floor!
+      vec2 p = (vUv - 0.5) * 2.0;
+      float d = length(p);
+      float mask = smoothstep(1.0, 0.15, d);
+      float shift = p.x * 2.4 + sin(uTime * 2.6 + p.y * 3.0) * 0.35;
+      vec3 rainbow = 0.55 + 0.45 * cos(vec3(0.0, 2.05, 4.1) + shift * 2.2);
+      col = mix(vec3(1.0, 0.97, 0.88), rainbow, smoothstep(0.05, 0.65, d));
+      alpha *= mask * mask;
+    }
+    col = col / (col + vec3(0.35)); // gentle filmic compression
+    fragColor = vec4(pow(max(col, 0.0), vec3(1.0 / 2.2)), alpha);
+    return;
+  }
+
+  // --- Special Type 2: Glossy Kitten Eyes ---
+  if (uMatType == 2) {
+    vec3 eyeCol = evalKittenEye(vLocalPos, N, V, L);
+    // ACES Filmic
+    eyeCol = (eyeCol * (2.51 * eyeCol + 0.03)) / (eyeCol * (2.43 * eyeCol + 0.59) + 0.14);
+    fragColor = vec4(pow(clamp(eyeCol, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
+    return;
+  }
+
+  // --- Special Type 3: Realistic Clear Glass Jar ---
+  if (uMatType == 3) {
+    float ndotv = clamp(dot(N, V), 0.0, 1.0);
+    float fres = pow(1.0 - ndotv, 2.6);
+    vec3 H = normalize(L + V);
+    float spec1 = pow(max(dot(N, H), 0.0), 160.0) * 1.65;
+    vec3 L2 = normalize(vec3(0.45, 0.72, 0.55));
+    vec3 H2 = normalize(L2 + V);
+    float spec2 = pow(max(dot(N, H2), 0.0), 64.0) * 0.42;
+    // Soft window reflection band
+    vec3 R = reflect(-V, N);
+    float winRefl = smoothstep(0.15, 0.72, -R.x) * smoothstep(-0.1, 0.6, R.y) * 0.48;
+    vec3 glassCol = mix(vec3(0.86, 0.92, 0.90), uSunColor * 1.15, fres * 0.65 + winRefl)
+                  + vec3(1.0, 0.97, 0.92) * (spec1 + spec2);
+    float alpha = clamp(0.13 + fres * 0.58 + spec1 * 0.45 + winRefl * 0.35, 0.0, 0.86);
+    glassCol = (glassCol * (2.51 * glassCol + 0.03)) / (glassCol * (2.43 * glassCol + 0.59) + 0.14);
+    fragColor = vec4(pow(clamp(glassCol, 0.0, 1.0), vec3(1.0 / 2.2)), alpha);
+    return;
+  }
+
+  // --- Special Type 4: Interactive Sparkling Water Surface ---
+  if (uMatType == 4) {
+    vec2 wp = vWorldPos.xz;
+    vec2 grad = vec2(0.0);
+    // Gentle ambient shimmer
+    grad.x += cos(wp.x * 26.0 + uTime * 2.1) * 0.015;
+    grad.y += sin(wp.y * 26.0 - uTime * 1.8) * 0.015;
+    // Interactive expanding circular ripples
+    for (int i = 0; i < 4; i++) {
+      vec4 rip = uRipples[i];
+      if (rip.w > 0.001) {
+        vec2 d = wp - rip.xy;
+        float dist = length(d) + 0.0001;
+        float waveRadius = rip.z * 0.42;
+        float env = exp(-abs(dist - waveRadius) * 28.0) * exp(-rip.z * 1.55) * rip.w;
+        float osc = cos((dist - waveRadius) * 58.0) * env;
+        grad += (d / dist) * osc * 0.24;
+      }
+    }
+    N = normalize(vec3(-grad.x, 1.0, -grad.y));
+    float ndotv = clamp(dot(N, V), 0.0, 1.0);
+    float fres = pow(1.0 - ndotv, 3.0);
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), 120.0) * 1.8;
+    vec3 R = reflect(-V, N);
+    vec3 envCol = mix(vec3(0.56, 0.78, 0.82), vec3(1.0, 0.95, 0.84), smoothstep(-0.2, 0.65, -R.x + R.y * 0.5));
+    vec3 waterCol = mix(vec3(0.52, 0.76, 0.80), envCol, 0.35 + fres * 0.55) + uSunColor * spec;
+    float alpha = clamp(0.42 + fres * 0.44 + spec * 0.4, 0.35, 0.92);
+    waterCol = (waterCol * (2.51 * waterCol + 0.03)) / (waterCol * (2.43 * waterCol + 0.59) + 0.14);
+    fragColor = vec4(pow(clamp(waterCol, 0.0, 1.0), vec3(1.0 / 2.2)), alpha);
+    return;
+  }
+
+  // --- Standard PBR / Fur / Sunlit Floor ---
+  vec3 albedo = uBaseColor.rgb;
+  float roughness = uRoughness;
+
+  if (uMatType == 1) {
+    evalKittenFur(vLocalPos, N, albedo, roughness);
+  } else {
+    vec4 texCol = texture(uTex, vUv * uTexScale);
+    albedo *= pow(texCol.rgb, vec3(2.2)); // convert sRGB canvas texture to linear
+  }
+
+  float shadow = sampleShadow(N, L);
+
+  // Morning window sunlight beam modulation on floor & woven mat
+  float sunMask = 1.0;
+  if (uMatType == 5) {
+    sunMask = mix(0.28, 1.18, morningWindowMask(vWorldPos));
+  }
+
+  // GGX Direct Sunlight
+  float ndotl = max(dot(N, L), 0.0);
+  float ndotv = max(dot(N, V), 0.001);
+  vec3 H = normalize(L + V);
+  float ndoth = max(dot(N, H), 0.0);
+  float hdotv = max(dot(H, V), 0.0);
+
+  float a = max(0.06, roughness * roughness);
+  float a2 = a * a;
+  float denom = ndoth * ndoth * (a2 - 1.0) + 1.0;
+  float D = a2 / (3.14159265 * denom * denom + 0.0001);
+  float k = (roughness + 1.0);
+  k = (k * k) / 8.0;
+  float G = (ndotv / (ndotv * (1.0 - k) + k)) * (ndotl / (ndotl * (1.0 - k) + k));
+  vec3 F0 = mix(vec3(0.04), albedo, uMetallic);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - hdotv, 5.0);
+
+  vec3 specDirect = (D * G * F) / max(4.0 * ndotv * ndotl, 0.001);
+  vec3 kD = (vec3(1.0) - F) * (1.0 - uMetallic);
+  vec3 diffDirect = kD * albedo / 3.14159265;
+
+  vec3 sunLight = uSunColor * (1.75 + uWarmth * 0.22) * shadow * sunMask;
+  vec3 color = (diffDirect + specDirect) * sunLight * ndotl;
+
+  // Soft warm fill light from the sunlit kitchen room (opposite side bounce)
+  vec3 fillDir = normalize(vec3(0.55, 0.45, 0.70));
+  float fillNdotL = max(dot(N, fillDir), 0.0);
+  color += diffDirect * vec3(0.95, 0.84, 0.72) * 0.48 * fillNdotL;
+
+  // Hemisphere ambient skylight + warm wooden floor bounce
+  float hemi = N.y * 0.5 + 0.5;
+  vec3 ambient = mix(uGroundColor, uSkyColor, hemi) * (0.62 + uWarmth * 0.08);
+  color += albedo * ambient * (1.0 - uMetallic * 0.6);
+
+  // Subtle environment specular sheen for glossy ceramics / brass / wet nose
+  vec3 R = reflect(-V, N);
+  float envSpec = smoothstep(-0.1, 0.85, R.y * 0.6 - R.x * 0.5);
+  color += mix(vec3(0.04), albedo, uMetallic) * mix(uGroundColor, uSunColor, envSpec) * (1.0 - roughness) * 0.28;
+
+  // Velvet Fur Rim Lighting & Warm Subsurface Scattering (backlit morning glow!)
+  if (uRimStrength > 0.001) {
+    float fres = pow(1.0 - ndotv, 2.5);
+    float backSun = 0.35 + 0.65 * smoothstep(-0.35, 0.8, dot(-V, L));
+    color += uRimColor * fres * uRimStrength * backSun * (0.45 + 0.55 * shadow);
+  }
+  if (uSubsurface > 0.001) {
+    float wrap = max(0.0, (dot(N, L) + 0.5) / 1.5);
+    float trans = pow(max(dot(V, -L), 0.0), 2.5) * 0.75 + wrap * 0.35;
+    color += vec3(1.0, 0.54, 0.38) * albedo * uSubsurface * trans * (0.5 + 0.5 * shadow);
+  }
+
+  // Dancing rainbow prism illumination bounce onto floor/mat
+  if (uMatType == 5 && uPrismSpot.z > 0.01) {
+    vec2 dp = vWorldPos.xz - uPrismSpot.xy;
+    float d = length(dp);
+    float pGlow = exp(-d * d * 14.0) * uPrismSpot.z;
+    vec3 pRain = 0.55 + 0.45 * cos(vec3(0.0, 2.1, 4.2) + dp.x * 7.0 + uTime * 2.4);
+    color += pRain * pGlow * 0.55;
+  }
+
+  // Subtle warm atmospheric haze for depth
+  float camDist = length(uCamPos - vWorldPos);
+  float fog = smoothstep(5.5, 13.5, camDist);
+  vec3 fogCol = mix(vec3(0.96, 0.88, 0.76), vec3(1.0, 0.93, 0.82), uWarmth);
+  color = mix(color, fogCol, fog * 0.38);
+
+  // ACES Filmic Tone Mapping + Gamma
+  color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
+  fragColor = vec4(pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2)), uBaseColor.a);
+}`;
+
+const shadowProg = createProgram(shadowVS, shadowFS);
+const mainProg = createProgram(mainVS, mainFS);
+
+const shLoc = {
+  uLightMVP: gl.getUniformLocation(shadowProg, 'uLightMVP')
+};
+
+const mLoc = {
+  uModel: gl.getUniformLocation(mainProg, 'uModel'),
+  uViewProj: gl.getUniformLocation(mainProg, 'uViewProj'),
+  uLightViewProj: gl.getUniformLocation(mainProg, 'uLightViewProj'),
+  uNormalMat: gl.getUniformLocation(mainProg, 'uNormalMat'),
+  uTex: gl.getUniformLocation(mainProg, 'uTex'),
+  uShadowMap: gl.getUniformLocation(mainProg, 'uShadowMap'),
+  uCamPos: gl.getUniformLocation(mainProg, 'uCamPos'),
+  uSunDir: gl.getUniformLocation(mainProg, 'uSunDir'),
+  uSunColor: gl.getUniformLocation(mainProg, 'uSunColor'),
+  uSkyColor: gl.getUniformLocation(mainProg, 'uSkyColor'),
+  uGroundColor: gl.getUniformLocation(mainProg, 'uGroundColor'),
+  uTime: gl.getUniformLocation(mainProg, 'uTime'),
+  uWarmth: gl.getUniformLocation(mainProg, 'uWarmth'),
+  uBaseColor: gl.getUniformLocation(mainProg, 'uBaseColor'),
+  uRoughness: gl.getUniformLocation(mainProg, 'uRoughness'),
+  uMetallic: gl.getUniformLocation(mainProg, 'uMetallic'),
+  uRimStrength: gl.getUniformLocation(mainProg, 'uRimStrength'),
+  uRimColor: gl.getUniformLocation(mainProg, 'uRimColor'),
+  uSubsurface: gl.getUniformLocation(mainProg, 'uSubsurface'),
+  uTexScale: gl.getUniformLocation(mainProg, 'uTexScale'),
+  uMatType: gl.getUniformLocation(mainProg, 'uMatType'),
+  uExtra: gl.getUniformLocation(mainProg, 'uExtra'),
+  uRipples0: gl.getUniformLocation(mainProg, 'uRipples[0]'),
+  uPrismSpot: gl.getUniformLocation(mainProg, 'uPrismSpot')
+};
+
+// --- Shadow Map FBO (1024x1024 Depth Texture with hardware PCF) ---
+const SHADOW_SIZE = 1024;
+const shadowTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+
+const shadowFBO = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+gl.drawBuffers([gl.NONE]);
+gl.readBuffer(gl.NONE);
+if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT16, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_SHORT, null);
+}
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+// ============================================================================
+// 4. PROCEDURAL TEXTURES (Warm Oak, Woven Rug, Ceramic, Beech, Cork, Tile, Yarn)
+// ============================================================================
+function makeTexture(size, drawFn, repeat = true) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  const ctx = cv.getContext('2d');
+  drawFn(ctx, size);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+  return tex;
+}
+
+const textures = {
+  white: makeTexture(4, (c, s) => { c.fillStyle = '#ffffff'; c.fillRect(0, 0, s, s); }),
+
+  woodFloor: makeTexture(512, (c, s) => {
+    const planks = 6;
+    const ph = s / planks;
+    const tones = ['#c89b6e', '#be8e61', '#cfa378', '#b8885b', '#c49567', '#cba073'];
+    for (let i = 0; i < planks; i++) {
+      const y = i * ph;
+      c.fillStyle = tones[i % tones.length];
+      c.fillRect(0, y, s, ph);
+      // Organic flowing wood grain
+      for (let g = 0; g < 32; g++) {
+        const gy = y + (g / 32) * ph;
+        c.strokeStyle = g % 3 === 0 ? 'rgba(98,60,30,0.14)' : 'rgba(255,232,198,0.09)';
+        c.lineWidth = 1 + (g % 2);
+        c.beginPath();
+        const phase = i * 2.3 + g * 0.4;
+        for (let x = 0; x <= s; x += 16) {
+          const dy = Math.sin(x * 0.015 + phase) * 3.2 + Math.sin(x * 0.042 + g) * 1.1;
+          if (x === 0) c.moveTo(x, gy + dy);
+          else c.lineTo(x, gy + dy);
+        }
+        c.stroke();
+      }
+      // Subtle vertical plank butt joint
+      const jx = ((i * 197 + 85) % s);
+      c.fillStyle = 'rgba(72,44,22,0.34)';
+      c.fillRect(jx, y, 2, ph);
+      // Horizontal plank seam
+      c.fillStyle = 'rgba(65,38,18,0.42)';
+      c.fillRect(0, y, s, 2);
+      c.fillStyle = 'rgba(255,240,215,0.16)';
+      c.fillRect(0, y + 2, s, 1.5);
+    }
+  }),
+
+  wovenMat: makeTexture(512, (c, s) => {
+    c.fillStyle = '#f3e7d8';
+    c.fillRect(0, 0, s, s);
+    // Soft pastel stripes (warm cream, blush peach, soft linen)
+    const bands = [
+      [0.08, 0.04, '#e6b8a2'],
+      [0.14, 0.018, '#d49a89'],
+      [0.84, 0.018, '#d49a89'],
+      [0.88, 0.04, '#e6b8a2']
+    ];
+    for (const [pos, w, col] of bands) {
+      c.fillStyle = col;
+      c.fillRect(0, pos * s, s, w * s);
+    }
+    // Fine cotton warp & weft weave
+    for (let y = 0; y < s; y += 4) {
+      c.fillStyle = (y % 8 === 0) ? 'rgba(135,104,80,0.11)' : 'rgba(255,250,242,0.18)';
+      c.fillRect(0, y, s, 2);
+    }
+    for (let x = 0; x < s; x += 6) {
+      c.fillStyle = (x % 12 === 0) ? 'rgba(120,92,70,0.09)' : 'rgba(255,255,255,0.12)';
+      c.fillRect(x, 0, 2, s);
+    }
+  }, false),
+
+  beechWood: makeTexture(256, (c, s) => {
+    c.fillStyle = '#e5c69e';
+    c.fillRect(0, 0, s, s);
+    for (let i = 0; i < 65; i++) {
+      const y = (i / 65) * s;
+      c.strokeStyle = i % 2 ? 'rgba(165,118,70,0.14)' : 'rgba(255,242,220,0.16)';
+      c.lineWidth = 1.5;
+      c.beginPath();
+      for (let x = 0; x <= s; x += 16) {
+        const dy = Math.sin(x * 0.025 + i * 0.3) * 2.5;
+        if (x === 0) c.moveTo(x, y + dy); else c.lineTo(x, y + dy);
+      }
+      c.stroke();
+    }
+  }),
+
+  cork: makeTexture(256, (c, s) => {
+    c.fillStyle = '#c29263';
+    c.fillRect(0, 0, s, s);
+    for (let i = 0; i < 900; i++) {
+      const x = Math.random() * s, y = Math.random() * s;
+      const r = 1.2 + Math.random() * 4.2;
+      c.fillStyle = Math.random() < 0.45 ? 'rgba(110,68,36,0.28)' : 'rgba(235,204,166,0.24)';
+      c.beginPath();
+      c.ellipse(x, y, r, r * 0.65, Math.random() * Math.PI, 0, Math.PI * 2);
+      c.fill();
+    }
+  }),
+
+  ceramic: makeTexture(256, (c, s) => {
+    c.fillStyle = '#fff9f2';
+    c.fillRect(0, 0, s, s);
+    // Delicate artisan stoneware speckles
+    for (let i = 0; i < 240; i++) {
+      c.fillStyle = 'rgba(135,102,82,0.16)';
+      c.beginPath();
+      c.arc(Math.random() * s, Math.random() * s, 0.7 + Math.random() * 1.4, 0, Math.PI * 2);
+      c.fill();
+    }
+  }),
+
+  kibble: makeTexture(128, (c, s) => {
+    c.fillStyle = '#8b5229';
+    c.fillRect(0, 0, s, s);
+    for (let i = 0; i < 360; i++) {
+      c.fillStyle = Math.random() < 0.5 ? 'rgba(62,31,12,0.32)' : 'rgba(195,134,76,0.25)';
+      c.beginPath();
+      c.arc(Math.random() * s, Math.random() * s, 1 + Math.random() * 2.5, 0, Math.PI * 2);
+      c.fill();
+    }
+  }),
+
+  tiles: makeTexture(512, (c, s) => {
+    c.fillStyle = '#e7dfd3';
+    c.fillRect(0, 0, s, s);
+    const rows = 8, cols = 4;
+    const tw = s / cols, th = s / rows;
+    for (let r = 0; r < rows; r++) {
+      const off = (r % 2) * (tw * 0.5);
+      for (let col = -1; col <= cols; col++) {
+        const x = col * tw + off;
+        const y = r * th;
+        const v = 244 + Math.floor((Math.sin(r * 7 + col * 13) * 0.5 + 0.5) * 8);
+        c.fillStyle = `rgb(${v},${v - 3},${v - 9})`;
+        c.fillRect(x + 2, y + 2, tw - 4, th - 4);
+      }
+    }
+  }),
+
+  yarn: makeTexture(256, (c, s) => {
+    c.fillStyle = '#e88b84';
+    c.fillRect(0, 0, s, s);
+    for (let i = 0; i < 90; i++) {
+      const y = (i / 90) * s;
+      c.strokeStyle = i % 3 === 0 ? 'rgba(255,235,228,0.42)' : 'rgba(170,74,70,0.32)';
+      c.lineWidth = 2.6;
+      c.beginPath();
+      for (let x = 0; x <= s; x += 8) {
+        const dy = Math.sin(x * 0.08 + i * 0.7) * 5;
+        if (x === 0) c.moveTo(x, y + dy); else c.lineTo(x, y + dy);
+      }
+      c.stroke();
+    }
+  })
+};
+
+// ============================================================================
+// 5. GEOMETRY BUILDERS (Smooth Organic Meshes, Lathe Ceramics, Wooden Ramp)
+// ============================================================================
+function createMesh(positions, normals, uvs, indices) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  const pBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, pBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+  const nBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, nBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+  const uBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, uBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, 0);
+
+  const iBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, iBuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+  gl.bindVertexArray(null);
+  return { vao, count: indices.length };
+}
+
+function computeSmoothNormals(pos, idx) {
+  const norm = new Float32Array(pos.length);
+  for (let i = 0; i < idx.length; i += 3) {
+    const i0 = idx[i] * 3, i1 = idx[i + 1] * 3, i2 = idx[i + 2] * 3;
+    const ax = pos[i1] - pos[i0], ay = pos[i1 + 1] - pos[i0 + 1], az = pos[i1 + 2] - pos[i0 + 2];
+    const bx = pos[i2] - pos[i0], by = pos[i2 + 1] - pos[i0 + 1], bz = pos[i2 + 2] - pos[i0 + 2];
+    const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+    norm[i0] += nx; norm[i0 + 1] += ny; norm[i0 + 2] += nz;
+    norm[i1] += nx; norm[i1 + 1] += ny; norm[i1 + 2] += nz;
+    norm[i2] += nx; norm[i2 + 1] += ny; norm[i2 + 2] += nz;
+  }
+  for (let i = 0; i < norm.length; i += 3) {
+    const l = Math.hypot(norm[i], norm[i + 1], norm[i + 2]) || 1;
+    norm[i] /= l; norm[i + 1] /= l; norm[i + 2] /= l;
+  }
+  return norm;
+}
+
+function createDeformedSphere(segU, segV, deformFn) {
+  const pos = [], uvs = [], idx = [];
+  for (let iy = 0; iy <= segV; iy++) {
+    const v = iy / segV;
+    const phi = v * Math.PI;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let ix = 0; ix <= segU; ix++) {
+      const u = ix / segU;
+      const theta = u * Math.PI * 2;
+      let x = sp * Math.sin(theta);
+      let y = cp;
+      let z = sp * Math.cos(theta);
+      if (deformFn) {
+        const d = deformFn(x, y, z, u, v);
+        x = d[0]; y = d[1]; z = d[2];
+      }
+      pos.push(x, y, z);
+      uvs.push(u, v);
+    }
+  }
+  const stride = segU + 1;
+  for (let iy = 0; iy < segV; iy++) {
+    for (let ix = 0; ix < segU; ix++) {
+      const a = iy * stride + ix;
+      const b = a + stride;
+      const c = b + 1;
+      const d = a + 1;
+      idx.push(a, b, d, b, c, d);
+    }
+  }
+  const norm = computeSmoothNormals(pos, idx);
+  return createMesh(pos, norm, uvs, idx);
+}
+
+function createBox(w = 1, h = 1, d = 1) {
+  const hw = w * 0.5, hh = h * 0.5, hd = d * 0.5;
+  const faces = [
+    [[ hw,-hh, hd],[ hw, hh, hd],[-hw, hh, hd],[-hw,-hh, hd],[ 0, 0, 1]],
+    [[-hw,-hh,-hd],[-hw, hh,-hd],[ hw, hh,-hd],[ hw,-hh,-hd],[ 0, 0,-1]],
+    [[-hw, hh, hd],[ hw, hh, hd],[ hw, hh,-hd],[-hw, hh,-hd],[ 0, 1, 0]],
+    [[-hw,-hh,-hd],[ hw,-hh,-hd],[ hw,-hh, hd],[-hw,-hh, hd],[ 0,-1, 0]],
+    [[ hw,-hh,-hd],[ hw, hh,-hd],[ hw, hh, hd],[ hw,-hh, hd],[ 1, 0, 0]],
+    [[-hw,-hh, hd],[-hw, hh, hd],[-hw, hh,-hd],[-hw,-hh,-hd],[-1, 0, 0]]
+  ];
+  const pos = [], norm = [], uvs = [], idx = [];
+  faces.forEach((f, fi) => {
+    const base = fi * 4;
+    const n = f[4];
+    const uvCoords = [[0,0],[0,1],[1,1],[1,0]];
+    for (let i = 0; i < 4; i++) {
+      pos.push(f[i][0], f[i][1], f[i][2]);
+      norm.push(n[0], n[1], n[2]);
+      uvs.push(uvCoords[i][0], uvCoords[i][1]);
+    }
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  });
+  return createMesh(pos, norm, uvs, idx);
+}
+
+function createPlane(w = 1, h = 1) {
+  const hw = w * 0.5, hh = h * 0.5;
+  return createMesh(
+    [-hw, 0,  hh,  hw, 0,  hh,  hw, 0, -hh, -hw, 0, -hh],
+    [  0, 1,   0,   0, 1,   0,   0, 1,   0,   0, 1,   0],
+    [  0, 0,       1, 0,        1, 1,        0, 1],
+    [0, 1, 2, 0, 2, 3]
+  );
+}
+
+function createQuadVertical(w = 1, h = 1) {
+  const hw = w * 0.5, hh = h * 0.5;
+  return createMesh(
+    [-hw, -hh, 0,  hw, -hh, 0,  hw,  hh, 0, -hw,  hh, 0],
+    [  0,   0, 1,   0,   0, 1,   0,   0, 1,   0,   0, 1],
+    [  0,   0,      1,   0,      1,   1,      0,   1],
+    [0, 1, 2, 0, 2, 3]
+  );
+}
+
+function createLathe(profile, segs = 32, scallopAmp = 0, scallopFreq = 0) {
+  // profile: [[r, y], ...] ordered from bottom-center -> outer -> rim -> inner -> inner-center
+  const pos = [], uvs = [], idx = [];
+  const rows = profile.length;
+  for (let i = 0; i < rows; i++) {
+    const [rBase, yBase] = profile[i];
+    const v = i / (rows - 1);
+    for (let j = 0; j <= segs; j++) {
+      const u = j / segs;
+      const a = u * Math.PI * 2;
+      const sc = scallopAmp ? (1.0 + scallopAmp * Math.cos(a * scallopFreq) * smoothstep(0.35, 0.72, v) * (1.0 - smoothstep(0.75, 0.96, v))) : 1.0;
+      const r = rBase * sc;
+      const y = yBase + (scallopAmp ? scallopAmp * 0.14 * Math.cos(a * scallopFreq) * smoothstep(0.42, 0.62, v) * (1.0 - smoothstep(0.65, 0.85, v)) : 0);
+      pos.push(Math.cos(a) * r, y, Math.sin(a) * r);
+      uvs.push(u * 2, v);
+    }
+  }
+  const stride = segs + 1;
+  for (let i = 0; i < rows - 1; i++) {
+    for (let j = 0; j < segs; j++) {
+      const a = i * stride + j;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const norm = computeSmoothNormals(pos, idx);
+  return createMesh(pos, norm, uvs, idx);
+}
+
+function createDisk(r = 1, segs = 32) {
+  const pos = [0, 0, 0], norm = [0, 1, 0], uvs = [0.5, 0.5], idx = [];
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    pos.push(Math.cos(a) * r, 0, Math.sin(a) * r);
+    norm.push(0, 1, 0);
+    uvs.push(0.5 + 0.5 * Math.cos(a), 0.5 + 0.5 * Math.sin(a));
+  }
+  for (let i = 1; i <= segs; i++) {
+    idx.push(0, i + 1, i);
+  }
+  return createMesh(pos, norm, uvs, idx);
+}
+
+function createCylinder(rTop, rBot, h, segs = 20) {
+  const prof = [
+    [0.001, -h * 0.5], [rBot, -h * 0.5], [rBot, -h * 0.45],
+    [rTop, h * 0.45], [rTop, h * 0.5], [0.001, h * 0.5]
+  ];
+  return createLathe(prof, segs);
+}
+
+// Handcrafted curved wooden rolling chute ("ころころスロープ")
+function evalRampPoint(t) {
+  // Smooth S-curve descending from top-left (-1.52, 0.72, -0.45) to mat edge (-0.42, 0.065, 0.36)
+  const x = lerp(-1.52, -0.42, t) + Math.sin(t * Math.PI) * -0.14;
+  const z = lerp(-0.46, 0.36, t) + Math.sin(t * Math.PI) * 0.16;
+  const y = 0.065 + Math.pow(1.0 - t, 1.52) * 0.65;
+  return [x, y, z];
+}
+
+function createRampMesh() {
+  const steps = 28;
+  const cross = [
+    [-0.135,  0.055], [-0.115,  0.055], [-0.105,  0.006],
+    [-0.055, -0.008], [ 0.055, -0.008], [ 0.105,  0.006],
+    [ 0.115,  0.055], [ 0.135,  0.055], [ 0.135, -0.045],
+    [-0.135, -0.045]
+  ];
+  const pos = [], uvs = [], idx = [];
+  const cs = cross.length;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const p = evalRampPoint(t);
+    const p2 = evalRampPoint(Math.min(1, t + 0.02));
+    const p1 = evalRampPoint(Math.max(0, t - 0.02));
+    const tang = V3.norm(V3.create(), [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]]);
+    const right = V3.norm(V3.create(), V3.cross(V3.create(), tang, [0, 1, 0]));
+    const up = V3.cross(V3.create(), right, tang);
+    for (let j = 0; j < cs; j++) {
+      const [cx, cy] = cross[j];
+      pos.push(
+        p[0] + right[0] * cx + up[0] * cy,
+        p[1] + right[1] * cx + up[1] * cy,
+        p[2] + right[2] * cx + up[2] * cy
+      );
+      uvs.push(t * 2.5, j / cs);
+    }
+  }
+  for (let i = 0; i < steps; i++) {
+    for (let j = 0; j < cs; j++) {
+      const jn = (j + 1) % cs;
+      const a = i * cs + j;
+      const b = i * cs + jn;
+      const c = (i + 1) * cs + j;
+      const d = (i + 1) * cs + jn;
+      idx.push(a, b, c, b, d, c);
+    }
+  }
+  const norm = computeSmoothNormals(pos, idx);
+  return createMesh(pos, norm, uvs, idx);
+}
+
+// Build all scene & organic kitten meshes
+const meshes = {
+  sphere: createDeformedSphere(20, 14),
+  sphereLow: createDeformedSphere(12, 9),
+  box: createBox(1, 1, 1),
+  plane: createPlane(1, 1),
+  quadV: createQuadVertical(1, 1),
+  disk: createDisk(1, 32),
+  cyl: createCylinder(1, 1, 1, 20),
+
+  // Organic Sculpted Kitten Anatomy
+  kittenTorso: createDeformedSphere(26, 20, (x, y, z) => {
+    // Cozy pear-shaped kitten torso (plump belly, soft shoulders, curved haunches)
+    const belly = Math.max(0, -y) * (1.0 - Math.abs(z) * 0.4) * 0.04;
+    const width = 0.215 * (1.0 + 0.14 * Math.sin((z + 0.5) * 2.2) - 0.12 * Math.max(0, y));
+    const height = 0.205 + belly;
+    const length = 0.355;
+    return [x * width, y * height, z * length];
+  }),
+
+  kittenHead: createDeformedSphere(28, 22, (x, y, z) => {
+    // Chubby adorable kitten head: rounded cheeks, gentle forehead, soft snout
+    const cheek = Math.exp(-Math.pow((y + 0.22) * 2.5, 2)) * Math.exp(-Math.pow((z - 0.25) * 2.0, 2)) * 0.025;
+    const snout = Math.max(0, z - 0.45) * Math.exp(-Math.pow((y + 0.18) * 3.2, 2)) * 0.045;
+    const rx = 0.218 + cheek;
+    const ry = 0.196;
+    const rz = 0.205 + snout;
+    return [x * rx, y * ry, z * rz];
+  }),
+
+  kittenEar: createDeformedSphere(16, 14, (x, y, z) => {
+    // Soft triangular-rounded cupped cat ear
+    const h = (y + 1.0) * 0.5; // 0 at base, 1 at tip
+    const taper = Math.pow(1.0 - h * 0.86, 0.72);
+    const cup = z > 0 ? (0.45 - 0.25 * (1.0 - h)) : 0.72;
+    return [x * 0.088 * taper, h * 0.155, z * 0.048 * taper * cup - h * h * 0.015];
+  }),
+
+  kittenLegUpper: createDeformedSphere(16, 14, (x, y, z) => {
+    const t = (y + 1) * 0.5; // 0 bottom, 1 top
+    const r = lerp(0.056, 0.078, t);
+    return [x * r, y * 0.125, z * r * 1.08];
+  }),
+
+  kittenLegLower: createDeformedSphere(16, 14, (x, y, z) => {
+    const t = (y + 1) * 0.5;
+    const r = lerp(0.049, 0.058, t);
+    return [x * r, y * 0.115, z * r * 1.05];
+  }),
+
+  kittenPaw: createDeformedSphere(16, 12, (x, y, z) => {
+    // Plump soft white-sock paw with gentle toe cushion forward
+    const flatBot = y < -0.35 ? lerp(y, -0.35, 0.55) : y;
+    return [x * 0.062, flatBot * 0.042, z * 0.078 + 0.018];
+  }),
+
+  kittenTailSeg: createDeformedSphere(14, 12, (x, y, z) => {
+    return [x * 0.055, y * 0.055, z * 0.082];
+  }),
+
+  kittenEyelid: createDeformedSphere(18, 12, (x, y, z) => {
+    // Smooth curved upper eyelid shell fitting snugly over the eyeball
+    const yy = Math.max(-0.18, y);
+    return [x * 0.0545, yy * 0.0545, z * 0.0515];
+  }),
+
+  // Scalloped Flower Ceramic Food Bowl
+  foodBowl: createLathe([
+    [0.001, 0.00], [0.22, 0.00], [0.26, 0.02], [0.32, 0.08],
+    [0.34, 0.135], [0.33, 0.152], [0.305, 0.150], [0.285, 0.12],
+    [0.24, 0.048], [0.16, 0.032], [0.001, 0.030]
+  ], 40, 0.042, 8),
+
+  // Smooth Aqua Ceramic Water Bowl
+  waterBowl: createLathe([
+    [0.001, 0.00], [0.21, 0.00], [0.255, 0.025], [0.295, 0.08],
+    [0.302, 0.128], [0.285, 0.135], [0.268, 0.125], [0.25, 0.055],
+    [0.16, 0.028], [0.001, 0.025]
+  ], 36),
+
+  // Rounded Apothecary Glass Kibble Jar
+  glassJar: createLathe([
+    [0.001, 0.002], [0.25, 0.002], [0.295, 0.04], [0.302, 0.44],
+    [0.285, 0.54], [0.225, 0.60], [0.225, 0.66], [0.242, 0.68],
+    [0.220, 0.685], [0.205, 0.65], [0.205, 0.59], [0.275, 0.51],
+    [0.282, 0.05], [0.23, 0.02], [0.001, 0.018]
+  ], 36),
+
+  // Tapered Cork Lid with Smooth Wooden Pull Knob
+  corkLid: createLathe([
+    [0.001, -0.055], [0.195, -0.055], [0.212, 0.025], [0.248, 0.035],
+    [0.248, 0.068], [0.225, 0.082], [0.065, 0.085], [0.052, 0.105],
+    [0.095, 0.135], [0.098, 0.168], [0.072, 0.195], [0.001, 0.200]
+  ], 32),
+
+  // Wooden Scoop Bowl
+  scoopCup: createLathe([
+    [0.001, 0.00], [0.095, 0.005], [0.122, 0.045], [0.128, 0.105],
+    [0.118, 0.112], [0.108, 0.102], [0.098, 0.038], [0.072, 0.020],
+    [0.001, 0.016]
+  ], 24),
+
+  // Wooden Rolling Ramp
+  ramp: createRampMesh(),
+
+  // Background Enamel Tea Kettle
+  kettle: createLathe([
+    [0.001, 0.00], [0.24, 0.00], [0.29, 0.08], [0.27, 0.22],
+    [0.19, 0.34], [0.12, 0.36], [0.13, 0.39], [0.05, 0.42], [0.001, 0.43]
+  ], 24),
+
+  // Background Herb Pot
+  herbPot: createLathe([
+    [0.001, 0.00], [0.11, 0.00], [0.155, 0.22], [0.168, 0.24],
+    [0.168, 0.28], [0.142, 0.28], [0.135, 0.23], [0.001, 0.22]
+  ], 22),
+
+  // Crystal Sun-Catcher Octahedron / Tear Prism
+  prism: createLathe([
+    [0.001, -0.14], [0.078, -0.03], [0.082, 0.03], [0.025, 0.13], [0.001, 0.15]
+  ], 8),
+
+  // Round Dry Food Kibble Pellet (plump glossy round sphere-pellet)
+  kibble: createDeformedSphere(12, 9, (x, y, z) => [x * 0.044, y * 0.039, z * 0.044])
+};
+
+// ============================================================================
+// 6. WORLD STATE, KIBBLE PHYSICS, TOYS, PARTICLES & KITTEN AI
+// ============================================================================
+const BOWL_POS = [0.38, 0, 0.88];
+const BOWL_R = 0.31;
+const WATER_POS = [-0.56, 0, 0.94];
+const WATER_R = 0.28;
+const JAR_POS = [1.42, 0, 0.20];
+const JAR_R = 0.30;
+const PRISM_POS = [-1.62, 1.56, -0.68];
+
+const world = {
+  time: 0,
+  warmth: 0.0,        // 0..1 gentle morning warmth progression
+  eatenCount: 0,
+  jarOpen: false,
+  jarOpenAnim: 0,     // 0 closed .. 1 open
+  jarWiggle: 0,
+  jarFill: 1.0,       // visual fill inside jar
+  lidPos: [JAR_POS[0], 0.67, JAR_POS[2]],
+  lidRot: [0, 0, 0],
+  lidHover: 0,
+
+  scoop: {
+    x: 1.15, y: 0.055, z: 0.72,
+    yaw: -0.6, tilt: 0,
+    dragging: false,
+    autoAnim: null,   // { t, dur, phase, target: 'bowl'|'ramp'|'floor', tx, tz, poured }
+    pelletsInScoop: 0
+  },
+
+  ball: {
+    x: -1.18, y: 0.13, z: 0.78,
+    vx: 0, vy: 0, vz: 0,
+    rx: 0, rz: 0,
+    r: 0.13,
+    dragging: false
+  },
+
+  ripples: [
+    [0, 0, 10, 0],
+    [0, 0, 10, 0],
+    [0, 0, 10, 0],
+    [0, 0, 10, 0]
+  ],
+  rippleIdx: 0,
+
+  prism: {
+    swing: 0,
+    swingVel: 0,
+    spotActive: 0,
+    spotTimer: 0,
+    spotX: -0.25,
+    spotZ: 0.28,
+    spotAngle: 0
+  },
+
+  curtainSway: 0,
+  curtainBoost: 0,
+  pointerWorld: [0, 0.15, 0.5],
+  pointerActive: false,
+  dragTarget: null,   // 'scoop' | 'ball' | 'kitten' | 'kibble' | 'lid' | 'water' | 'floor'
+  dragKibble: null,
+  lastPointerX: 0,
+  lastPointerY: 0,
+  pointerDownTime: 0,
+  pointerMoved: 0,
+  floorTrailTimer: 0,
+
+  kibbles: [],        // active loose round kibble pellets
+  jarPellets: [],     // decorative pellets resting inside the glass jar
+  particles: [],      // crumbs, sunlit dust motes, steam wisps, warm sparkles
+  dustMotes: []
+};
+
+// Populate decorative round kibble inside the glass jar
+for (let layer = 0; layer < 5; layer++) {
+  const cnt = layer === 0 ? 7 : 8;
+  for (let i = 0; i < cnt; i++) {
+    const a = (i / cnt) * Math.PI * 2 + layer * 0.55;
+    const rad = (i % 3 === 0 ? 0.07 : 0.175) + (Math.random() - 0.5) * 0.04;
+    world.jarPellets.push({
+      x: Math.cos(a) * rad,
+      y: 0.06 + layer * 0.072 + (Math.random() - 0.5) * 0.015,
+      z: Math.sin(a) * rad,
+      ry: Math.random() * 6.28,
+      shade: 0.85 + Math.random() * 0.3
+    });
+  }
+}
+
+// Floating sunlit morning dust motes
+for (let i = 0; i < 28; i++) {
+  world.dustMotes.push({
+    x: -2.2 + Math.random() * 4.2,
+    y: 0.25 + Math.random() * 2.2,
+    z: -1.1 + Math.random() * 2.5,
+    phase: Math.random() * 6.28,
+    speed: 0.3 + Math.random() * 0.5,
+    size: 0.022 + Math.random() * 0.026
+  });
+}
+
+function addRipple(wx, wz, strength = 1.0) {
+  world.ripples[world.rippleIdx] = [wx, wz, 0.0, strength];
+  world.rippleIdx = (world.rippleIdx + 1) % 4;
+}
+
+function spawnParticle(x, y, z, vx, vy, vz, life, size, color, kind = 'sparkle') {
+  if (world.particles.length > 90) world.particles.shift();
+  world.particles.push({ x, y, z, vx, vy, vz, age: 0, life, size, color, kind });
+}
+
+function spawnKibble(x, y, z, vx = 0, vy = 0, vz = 0, onRamp = false, rampT = 0) {
+  // Keep total active loose kibble cozy and smooth
+  if (world.kibbles.length >= 44) {
+    // Remove oldest uneaten pellet farthest from bowl
+    let remIdx = 0;
+    for (let i = 0; i < world.kibbles.length; i++) {
+      if (!world.kibbles[i].inBowl && world.kibbles[i] !== kitten.targetKibble) {
+        remIdx = i; break;
+      }
+    }
+    world.kibbles.splice(remIdx, 1);
+  }
+  world.kibbles.push({
+    x, y, z, vx, vy, vz,
+    rx: Math.random() * 6.28,
+    ry: Math.random() * 6.28,
+    rz: Math.random() * 6.28,
+    r: 0.043,
+    inBowl: false,
+    onRamp,
+    rampT,
+    rampVel: onRamp ? 0.12 + Math.random() * 0.08 : 0,
+    rampLat: onRamp ? (Math.random() - 0.5) * 0.09 : 0,
+    shade: 0.84 + Math.random() * 0.32,
+    age: 0,
+    batted: false
+  });
+}
+
+function dropRampKibble(count = 5) {
+  sound.playScoopRustle();
+  for (let i = 0; i < count; i++) {
+    const t0 = 0.02 + i * 0.028;
+    const p = evalRampPoint(t0);
+    spawnKibble(p[0], p[1] + 0.06 + i * 0.035, p[2], 0, 0, 0, true, t0);
+  }
+}
+
+function openJar(withSpill = true) {
+  if (world.jarOpen) return;
+  world.jarOpen = true;
+  sound.playCorkPop(true);
+  world.jarWiggle = 1.0;
+  // Kitten gives a delighted little hop & bell jingle when the food jar pops open!
+  kitten.happyHopVel = 1.65;
+  kitten.bellVel += 9.5;
+  sound.playBell(0.06);
+  // Joyful little welcome bounce of 3 rolling kibble pellets!
+  if (withSpill) {
+    for (let i = 0; i < 3; i++) {
+      const ang = 2.45 + (i - 1) * 0.34 + (Math.random() - 0.5) * 0.15;
+      const spd = 1.05 + Math.random() * 0.55;
+      spawnKibble(
+        JAR_POS[0] - 0.14, 0.72 + i * 0.04, JAR_POS[2] + 0.08,
+        Math.cos(ang) * spd, 0.95 + Math.random() * 0.35, Math.sin(ang) * spd
+      );
+    }
+    sound.playScoopRustle();
+  }
+}
+
+function triggerAutoScoop(dest = 'bowl', tx = BOWL_POS[0], tz = BOWL_POS[2]) {
+  if (!world.jarOpen) openJar(false);
+  if (world.scoop.autoAnim) return;
+  world.scoop.autoAnim = {
+    t: 0,
+    dur: 1.38,
+    dest,
+    tx,
+    tz,
+    scooped: false,
+    poured: false
+  };
+}
+
+// ============================================================================
+// 7. THE KITTEN (Ginger Tabby with White Socks — Rich Living State Machine!)
+// ============================================================================
+const kitten = {
+  x: -0.14, y: 0, z: 0.02,
+  yaw: 0.25,
+  targetYaw: 0.25,
+  speed: 0,
+
+  state: 'STRETCH',
+  stateTime: 0,
+  stateDur: 3.2,
+  fullness: 0,        // builds smoothly with each kibble eaten
+  thirst: 0,          // builds as she eats -> walks to drink water!
+  happy: 0.35,
+  petting: 0,
+  petStroke: 0,
+
+  // Target references
+  targetKibble: null,
+  walkTarget: null,
+  nextAfterWalk: 'IDLE',
+
+  // Expressive animation parameters
+  headYaw: 0,
+  headPitch: 0,
+  headRoll: 0,
+  gazeX: 0,
+  gazeY: 0,
+  pupilSize: 0.26,
+  blinkTimer: 2.2,
+  blinkClose: 0,
+  happyEyes: 0,
+  earPerk: 0.6,
+  earTwitchL: 0,
+  earTwitchR: 0,
+  tailMood: 0.6,
+  tailWag: 0,
+  walkPhase: 0,
+  stepSoundPrev: 0,
+  bodyPitch: 0,
+  bodyRoll: 0,
+  bodyHeight: 0.33,
+  sitBlend: 0,
+  stretchBlend: 0,
+  crouchBlend: 0,
+  bellyBlend: 0,
+  napBlend: 0,
+  eatNod: 0,
+  tongueOut: 0,
+  pawLiftL: 0,
+  pawLiftR: 0,
+  pawBatSide: 1,
+  buttWiggle: 0,
+  crunchTimer: 0,
+  lapTimer: 0,
+  groomPhase: 0,
+  happyHop: 0,
+  happyHopVel: 0,
+  bellSwing: 0,
+  bellVel: 0,
+  meowCooldown: 0.8
+};
+
+function setKittenState(next, dur = 3.0) {
+  kitten.state = next;
+  kitten.stateTime = 0;
+  kitten.stateDur = dur;
+  kitten.crunchTimer = 0;
+  kitten.lapTimer = 0;
+}
+
+function nudgeKittenJoy(x, y, z) {
+  for (let i = 0; i < 4; i++) {
+    spawnParticle(
+      x + (Math.random() - 0.5) * 0.32,
+      y + 0.15 + Math.random() * 0.22,
+      z + (Math.random() - 0.5) * 0.28,
+      (Math.random() - 0.5) * 0.22,
+      0.32 + Math.random() * 0.28,
+      (Math.random() - 0.5) * 0.22,
+      0.85 + Math.random() * 0.5,
+      0.032 + Math.random() * 0.022,
+      [1.0, 0.92, 0.68],
+      'sparkle'
+    );
+  }
+}
+
+function findInterestingKibble() {
+  // Prioritize rolling kibble (so exciting to chase!) or closest kibble on floor/bowl
+  let best = null;
+  let bestScore = Infinity;
+  for (const k of world.kibbles) {
+    if (k.onRamp) continue;
+    const dist = Math.hypot(k.x - kitten.x, k.z - kitten.z);
+    const spd = Math.hypot(k.vx, k.vz);
+    const score = dist - (spd > 0.25 ? 0.75 : 0);
+    if (score < bestScore) {
+      bestScore = score;
+      best = k;
+    }
+  }
+  return best;
+}
+
+function updateKitten(dt) {
+  const k = kitten;
+  k.stateTime += dt;
+  k.meowCooldown = Math.max(0, k.meowCooldown - dt);
+  k.petting = Math.max(0, k.petting - dt * 1.4);
+
+  // Check if any kibble is currently rolling down the ramp (kitten watches it wide-eyed!)
+  let rampWatch = null;
+  for (const p of world.kibbles) {
+    if (p.onRamp) { rampWatch = p; break; }
+  }
+
+  // Smooth blinking
+  k.blinkTimer -= dt;
+  if (k.blinkTimer <= 0) {
+    k.blinkTimer = 2.6 + Math.random() * 3.2;
+  }
+  const blinkWave = k.blinkTimer < 0.16 ? Math.sin((k.blinkTimer / 0.16) * Math.PI) : 0;
+
+  // Occasional cute ear twitch
+  if (Math.random() < dt * 0.45) k.earTwitchL = 1.0;
+  if (Math.random() < dt * 0.45) k.earTwitchR = 1.0;
+  k.earTwitchL = Math.max(0, k.earTwitchL - dt * 6.5);
+  k.earTwitchR = Math.max(0, k.earTwitchR - dt * 6.5);
+
+  // Target poses (blended smoothly every frame)
+  let tSit = 0, tStretch = 0, tCrouch = 0, tBelly = 0, tNap = 0;
+  let tHappyEyes = 0, tPupil = 0.25, tEarPerk = 0.6;
+  let tPawL = 0, tPawR = 0, tEatNod = 0, tTongue = 0, tWiggle = 0;
+  let lookAtWorld = null;
+  let purrWant = 0;
+
+  // Petting override (unless mid-walk)
+  if (k.petting > 0.25 && k.state !== 'BELLY_ROLL') {
+    purrWant = 0.95;
+    tHappyEyes = 0.95;
+    tPupil = 0.38;
+    tEarPerk = 0.25;
+    if (k.state === 'IDLE' || k.state === 'NAP' || k.state === 'GROOM') {
+      k.petStroke += dt;
+      if (k.petStroke > 1.55 && k.fullness >= 0.35) {
+        k.petStroke = 0;
+        setKittenState('BELLY_ROLL', 5.2);
+        sound.playMeow('chirp');
+      }
+    }
+  } else {
+    k.petStroke = Math.max(0, k.petStroke - dt * 0.6);
+  }
+
+  // --- STATE MACHINE ---
+  if (k.state === 'STRETCH') {
+    // Classic morning front-paw stretch!
+    const p = smoothstep(0.12, 0.35, k.stateTime / k.stateDur) * (1.0 - smoothstep(0.76, 0.96, k.stateTime / k.stateDur));
+    tStretch = p;
+    tHappyEyes = p * 0.85;
+    tEarPerk = 0.35;
+    if (k.stateTime > 0.6 && k.stateTime < 0.7 && k.meowCooldown <= 0) {
+      sound.playMeow('stretch');
+      k.meowCooldown = 2.0;
+    }
+    if (k.stateTime >= k.stateDur) {
+      // Look eagerly at the bowl & jar to invite the child!
+      setKittenState('IDLE', 3.5);
+    }
+  }
+  else if (k.state === 'IDLE') {
+    tSit = 1.0;
+    tEarPerk = 0.75;
+
+    // Look at most interesting thing: ramp kibble -> prism light -> moving ball -> jar -> pointer -> camera
+    const ballSpeed = Math.hypot(world.ball.vx, world.ball.vz);
+    if (rampWatch) {
+      lookAtWorld = [rampWatch.x, rampWatch.y, rampWatch.z];
+      tPupil = 0.42; tEarPerk = 1.0;
+    } else if (world.prism.spotActive > 0.3) {
+      lookAtWorld = [world.prism.spotX, 0.04, world.prism.spotZ];
+      tPupil = 0.43;
+      if (k.stateTime > 0.45) {
+        k.walkTarget = [world.prism.spotX, world.prism.spotZ];
+        k.nextAfterWalk = 'POUNCE_PRISM';
+        setKittenState('STALK', 0.85);
+      }
+    } else if (ballSpeed > 0.35 || world.ball.dragging) {
+      lookAtWorld = [world.ball.x, world.ball.y, world.ball.z];
+      tPupil = 0.42;
+      if (ballSpeed > 0.45 && k.stateTime > 0.25) {
+        k.walkTarget = [world.ball.x, world.ball.z];
+        k.nextAfterWalk = 'BAT_BALL';
+        setKittenState('STALK', 0.75);
+      }
+    } else {
+      const kibb = findInterestingKibble();
+      if (kibb) {
+        k.targetKibble = kibb;
+        const kSpd = Math.hypot(kibb.vx, kibb.vz);
+        lookAtWorld = [kibb.x, kibb.y, kibb.z];
+        tPupil = 0.40;
+        if (k.stateTime > 0.28) {
+          if (kSpd > 0.35 && !kibb.inBowl && !kibb.batted) {
+            k.walkTarget = [kibb.x, kibb.z];
+            k.nextAfterWalk = 'BAT_KIBBLE';
+            setKittenState('STALK', 0.72);
+          } else {
+            k.walkTarget = [kibb.x, kibb.z];
+            k.nextAfterWalk = 'EAT';
+            setKittenState('WALK', 6.0);
+          }
+        }
+      } else if (k.thirst >= 0.85 && k.stateTime > 0.9) {
+        // Thirsty after munching! Go drink water!
+        k.walkTarget = [WATER_POS[0] + 0.34, WATER_POS[2] - 0.24];
+        k.nextAfterWalk = 'DRINK';
+        setKittenState('WALK', 6.0);
+      } else if (!world.jarOpen && k.stateTime > 1.2) {
+        // Glance cutely between the corked jar and the child
+        if (Math.sin(k.stateTime * 1.1) > 0) {
+          lookAtWorld = [JAR_POS[0], 0.65, JAR_POS[2]];
+        } else {
+          lookAtWorld = [0, 1.45, 3.2];
+        }
+        if (k.stateTime > 4.2 && k.meowCooldown <= 0) {
+          sound.playMeow('sweet');
+          k.meowCooldown = 7.0;
+          world.jarWiggle = 0.7;
+          setKittenState('GROOM', 2.8);
+        }
+      } else if (k.stateTime > k.stateDur) {
+        // Choose charming autonomous behavior: groom, nap in sunbeam when full, or stretch!
+        if (k.fullness >= 0.75 && Math.random() < 0.55) {
+          k.walkTarget = [-0.28, 0.14];
+          k.nextAfterWalk = 'NAP';
+          setKittenState('WALK', 5.0);
+        } else if (Math.random() < 0.55) {
+          setKittenState('GROOM', 3.0);
+        } else {
+          setKittenState('STRETCH', 2.8);
+        }
+      }
+    }
+  }
+  else if (k.state === 'STALK') {
+    // Cute crouch & butt-wiggle before chasing rolling kibble / yarn ball / rainbow spot!
+    tCrouch = 1.0;
+    tPupil = 0.45;
+    tEarPerk = 1.0;
+    tWiggle = Math.sin(k.stateTime * 24.0) * smoothstep(0.1, 0.4, k.stateTime);
+    if (k.nextAfterWalk === 'BAT_BALL') {
+      k.walkTarget = [world.ball.x, world.ball.z];
+    } else if (k.nextAfterWalk === 'POUNCE_PRISM') {
+      k.walkTarget = [world.prism.spotX, world.prism.spotZ];
+    } else if (k.targetKibble && world.kibbles.includes(k.targetKibble)) {
+      k.walkTarget = [k.targetKibble.x, k.targetKibble.z];
+    }
+    if (k.walkTarget) {
+      lookAtWorld = [k.walkTarget[0], 0.08, k.walkTarget[1]];
+      k.targetYaw = Math.atan2(k.walkTarget[0] - k.x, k.walkTarget[1] - k.z);
+    }
+    if (k.stateTime >= k.stateDur) {
+      if (k.meowCooldown <= 0) {
+        sound.playMeow('chirp');
+        k.meowCooldown = 3.0;
+      }
+      setKittenState('WALK', 5.0);
+    }
+  }
+  else if (k.state === 'WALK') {
+    // Dynamically track moving target
+    if (k.nextAfterWalk === 'EAT' || k.nextAfterWalk === 'BAT_KIBBLE') {
+      if (!k.targetKibble || !world.kibbles.includes(k.targetKibble)) {
+        k.targetKibble = findInterestingKibble();
+      }
+      if (k.targetKibble) {
+        k.walkTarget = [k.targetKibble.x, k.targetKibble.z];
+      } else {
+        setKittenState('IDLE', 2.0);
+      }
+    } else if (k.nextAfterWalk === 'BAT_BALL') {
+      k.walkTarget = [world.ball.x, world.ball.z];
+    } else if (k.nextAfterWalk === 'POUNCE_PRISM') {
+      if (world.prism.spotActive < 0.1) setKittenState('IDLE', 1.8);
+      else k.walkTarget = [world.prism.spotX, world.prism.spotZ];
+    }
+
+    if (k.walkTarget) {
+      let tx = k.walkTarget[0], tz = k.walkTarget[1];
+      let stopDist = 0.28;
+      if (k.nextAfterWalk === 'EAT' && k.targetKibble && k.targetKibble.inBowl) {
+        // Stand neatly at the edge of the flower bowl to eat
+        const ang = Math.atan2(k.z - BOWL_POS[2], k.x - BOWL_POS[0]);
+        tx = BOWL_POS[0] + Math.cos(ang) * 0.44;
+        tz = BOWL_POS[2] + Math.sin(ang) * 0.44;
+        stopDist = 0.14;
+      } else if (k.nextAfterWalk === 'DRINK') {
+        stopDist = 0.12;
+      } else if (k.nextAfterWalk === 'BAT_BALL') {
+        stopDist = 0.34;
+      } else if (k.nextAfterWalk === 'NAP') {
+        stopDist = 0.14;
+      }
+
+      const dx = tx - k.x;
+      const dz = tz - k.z;
+      const dist = Math.hypot(dx, dz);
+      lookAtWorld = [k.walkTarget[0], 0.1, k.walkTarget[1]];
+      tPupil = 0.38;
+
+      if (dist > stopDist) {
+        const desiredYaw = Math.atan2(dx, dz);
+        k.targetYaw = desiredYaw;
+        const playfulFast = (k.nextAfterWalk === 'BAT_BALL' || k.nextAfterWalk === 'BAT_KIBBLE' || k.nextAfterWalk === 'POUNCE_PRISM');
+        const maxSpd = playfulFast ? 1.55 : 1.05;
+        k.speed = damp(k.speed, Math.min(maxSpd, dist * 2.5 + 0.35), 7, dt);
+        const mx = Math.sin(k.yaw) * k.speed * dt;
+        const mz = Math.cos(k.yaw) * k.speed * dt;
+        k.x = clamp(k.x + mx, -1.78, 1.72);
+        k.z = clamp(k.z + mz, -0.82, 1.38);
+
+        // Soft obstacle push-out from jar & bowls
+        const pushOut = (ox, oz, minR) => {
+          const pdx = k.x - ox, pdz = k.z - oz;
+          const pd = Math.hypot(pdx, pdz);
+          if (pd < minR && pd > 0.001) {
+            k.x = ox + (pdx / pd) * minR;
+            k.z = oz + (pdz / pd) * minR;
+          }
+        };
+        pushOut(JAR_POS[0], JAR_POS[2], 0.56);
+        pushOut(BOWL_POS[0], BOWL_POS[2], 0.42);
+        pushOut(WATER_POS[0], WATER_POS[2], 0.40);
+
+        k.walkPhase += dt * k.speed * 11.5;
+        const stepTick = Math.floor(k.walkPhase / Math.PI);
+        if (stepTick !== k.stepSoundPrev) {
+          k.stepSoundPrev = stepTick;
+          sound.playPawStep();
+          k.bellVel += (Math.random() - 0.5) * 4.5;
+        }
+      } else {
+        k.speed = 0;
+        if (k.nextAfterWalk === 'EAT') {
+          if (k.targetKibble) {
+            k.targetYaw = Math.atan2(k.targetKibble.x - k.x, k.targetKibble.z - k.z);
+          }
+          setKittenState('EAT', 1.45);
+        } else if (k.nextAfterWalk === 'BAT_KIBBLE') {
+          k.pawBatSide = Math.random() < 0.5 ? 1 : -1;
+          setKittenState('BAT_KIBBLE', 0.72);
+        } else if (k.nextAfterWalk === 'BAT_BALL') {
+          k.pawBatSide = Math.random() < 0.5 ? 1 : -1;
+          setKittenState('BAT_BALL', 0.75);
+        } else if (k.nextAfterWalk === 'POUNCE_PRISM') {
+          k.pawBatSide = Math.random() < 0.5 ? 1 : -1;
+          setKittenState('POUNCE_PRISM', 0.9);
+        } else if (k.nextAfterWalk === 'DRINK') {
+          k.targetYaw = Math.atan2(WATER_POS[0] - k.x, WATER_POS[2] - k.z);
+          setKittenState('DRINK', 3.1);
+        } else if (k.nextAfterWalk === 'NAP') {
+          k.targetYaw = 0.4;
+          setKittenState('NAP', 11.0);
+        } else {
+          setKittenState('IDLE', 2.5);
+        }
+      }
+    }
+  }
+  else if (k.state === 'BAT_KIBBLE') {
+    // Adorable playful white-sock paw bat ("ちょいちょい!") on a rolling kibble!
+    tSit = 0.4;
+    tPupil = 0.44;
+    const batCurve = Math.sin(clamp(k.stateTime / 0.55, 0, 1) * Math.PI);
+    if (k.pawBatSide > 0) tPawR = batCurve * 1.15; else tPawL = batCurve * 1.15;
+    if (k.targetKibble && world.kibbles.includes(k.targetKibble)) {
+      lookAtWorld = [k.targetKibble.x, k.targetKibble.y, k.targetKibble.z];
+      if (!k.targetKibble.batted && k.stateTime > 0.22) {
+        k.targetKibble.batted = true;
+        // Gently knock the kibble rolling across the mat!
+        const ang = k.yaw + k.pawBatSide * 0.55 + (Math.random() - 0.5) * 0.35;
+        k.targetKibble.vx = Math.sin(ang) * 0.82;
+        k.targetKibble.vz = Math.cos(ang) * 0.82;
+        k.targetKibble.vy = 0.32;
+        sound.playKibbleClick('wood', 0.75);
+        sound.playBell(0.05);
+        k.bellVel += 7.0;
+      }
+    }
+    if (k.stateTime >= k.stateDur) {
+      if (k.targetKibble && world.kibbles.includes(k.targetKibble)) {
+        k.walkTarget = [k.targetKibble.x, k.targetKibble.z];
+        k.nextAfterWalk = 'EAT';
+        setKittenState('WALK', 4.5);
+      } else {
+        setKittenState('IDLE', 2.0);
+      }
+    }
+  }
+  else if (k.state === 'BAT_BALL') {
+    tPupil = 0.45;
+    const batCurve = Math.sin(clamp(k.stateTime / 0.55, 0, 1) * Math.PI);
+    if (k.pawBatSide > 0) tPawR = batCurve * 1.2; else tPawL = batCurve * 1.2;
+    lookAtWorld = [world.ball.x, world.ball.y, world.ball.z];
+    if (k.stateTime > 0.22 && k.stateTime < 0.28) {
+      const toCenterAng = Math.atan2(-world.ball.x * 0.5 + (Math.random() - 0.5) * 1.2, 0.35 - world.ball.z);
+      world.ball.vx = Math.sin(toCenterAng) * 1.85;
+      world.ball.vz = Math.cos(toCenterAng) * 1.85;
+      world.ball.vy = 0.45;
+      sound.playBell(0.11);
+      nudgeKittenJoy(world.ball.x, world.ball.y + 0.1, world.ball.z);
+    }
+    if (k.stateTime >= k.stateDur) {
+      setKittenState('IDLE', 1.8);
+    }
+  }
+  else if (k.state === 'POUNCE_PRISM') {
+    // Playfully pats the dancing rainbow sunlight spot on the wooden floor!
+    tCrouch = 0.55;
+    tPupil = 0.45;
+    const pat = Math.abs(Math.sin(k.stateTime * 9.5));
+    if (k.pawBatSide > 0) tPawR = pat * 0.95; else tPawL = pat * 0.95;
+    lookAtWorld = [world.prism.spotX, 0.02, world.prism.spotZ];
+    if (k.stateTime >= k.stateDur) {
+      if (world.prism.spotActive > 0.35 && Math.random() < 0.7) {
+        k.walkTarget = [world.prism.spotX, world.prism.spotZ];
+        k.nextAfterWalk = 'POUNCE_PRISM';
+        setKittenState('WALK', 3.0);
+      } else {
+        setKittenState('IDLE', 2.0);
+      }
+    }
+  }
+  else if (k.state === 'EAT') {
+    // Super cute eating animation: dips head, crunches "kari-kari", happy crescent eyes, licks lips!
+    tHappyEyes = 0.92;
+    tPupil = 0.36;
+    tEarPerk = 0.38;
+    purrWant = 0.35;
+    const isLicking = k.stateTime > k.stateDur - 0.38;
+    if (!isLicking) {
+      tEatNod = 0.85 + Math.sin(k.stateTime * 19.0) * 0.22;
+      k.crunchTimer += dt;
+      if (k.crunchTimer > 0.34) {
+        k.crunchTimer = 0;
+        sound.playCrunch();
+        // Tiny golden kibble crumbs!
+        const cx = k.x + Math.sin(k.yaw) * 0.30;
+        const cz = k.z + Math.cos(k.yaw) * 0.30;
+        for (let i = 0; i < 3; i++) {
+          spawnParticle(
+            cx + (Math.random() - 0.5) * 0.06, 0.10, cz + (Math.random() - 0.5) * 0.06,
+            (Math.random() - 0.5) * 0.45, 0.45 + Math.random() * 0.35, (Math.random() - 0.5) * 0.45,
+            0.42, 0.015, [0.76, 0.48, 0.24], 'crumb'
+          );
+        }
+      }
+      // Consume the kibble midway through munching
+      if (k.stateTime > 0.65 && k.targetKibble) {
+        const idx = world.kibbles.indexOf(k.targetKibble);
+        if (idx >= 0) {
+          world.kibbles.splice(idx, 1);
+          world.eatenCount++;
+          k.fullness = Math.min(1.0, k.fullness + 0.11);
+          k.thirst = Math.min(1.2, k.thirst + 0.24);
+          k.happy = Math.min(1.0, k.happy + 0.14);
+          nudgeKittenJoy(k.x + Math.sin(k.yaw) * 0.25, 0.38, k.z + Math.cos(k.yaw) * 0.25);
+        }
+        k.targetKibble = null;
+      }
+    } else {
+      // Cute pink nose-licking after munching!
+      tEatNod = 0.15;
+      tTongue = Math.max(0, Math.sin((k.stateTime - (k.stateDur - 0.38)) * 18.0));
+    }
+
+    if (k.stateTime >= k.stateDur) {
+      // Check if another kibble is right next to her -> keep munching happily!
+      const nextK = findInterestingKibble();
+      if (nextK && Math.hypot(nextK.x - k.x, nextK.z - k.z) < 0.65 && k.thirst < 1.0) {
+        k.targetKibble = nextK;
+        k.targetYaw = Math.atan2(nextK.x - k.x, nextK.z - k.z);
+        setKittenState('EAT', 1.25);
+      } else if (k.thirst >= 0.92) {
+        k.walkTarget = [WATER_POS[0] + 0.34, WATER_POS[2] - 0.24];
+        k.nextAfterWalk = 'DRINK';
+        setKittenState('WALK', 6.0);
+      } else {
+        if (world.eatenCount % 3 === 0 && k.meowCooldown <= 0) {
+          sound.playMeow('happy');
+          k.happyHopVel = 1.5;
+          k.bellVel += 8.0;
+          sound.playBell(0.05);
+          k.meowCooldown = 3.2;
+        }
+        setKittenState('IDLE', 2.4);
+      }
+    }
+  }
+  else if (k.state === 'DRINK') {
+    // Adorable lapping at the pale aqua water bowl with real ripples!
+    tHappyEyes = 0.72;
+    tEatNod = 0.78 + Math.sin(k.stateTime * 15.0) * 0.12;
+    tTongue = Math.max(0, Math.sin(k.stateTime * 15.0));
+    k.lapTimer += dt;
+    if (k.lapTimer > 0.36) {
+      k.lapTimer = 0;
+      sound.playWaterDrop(true);
+      addRipple(WATER_POS[0] + (Math.random() - 0.5) * 0.06, WATER_POS[2] + (Math.random() - 0.5) * 0.06, 0.65);
+    }
+    if (k.stateTime >= k.stateDur) {
+      k.thirst = 0;
+      nudgeKittenJoy(k.x, 0.38, k.z);
+      setKittenState('GROOM', 2.5);
+    }
+  }
+  else if (k.state === 'GROOM') {
+    // Sits nicely, licks white-sock paw and washes her cheek!
+    tSit = 1.0;
+    tHappyEyes = 0.78;
+    tEarPerk = 0.45;
+    k.groomPhase += dt * 5.6;
+    const wave = 0.5 + 0.5 * Math.sin(k.groomPhase);
+    tPawR = 0.65 + wave * 0.55;
+    tEatNod = 0.28 + wave * 0.22;
+    tTongue = Math.max(0, Math.sin(k.groomPhase * 2.0)) * 0.7;
+    if (k.stateTime >= k.stateDur || findInterestingKibble()) {
+      setKittenState('IDLE', 2.5);
+    }
+  }
+  else if (k.state === 'BELLY_ROLL') {
+    // Blissful belly-up roll showing cream tummy & white-sock paws with pink toe beans!
+    tBelly = 1.0;
+    tHappyEyes = 0.95;
+    tPupil = 0.38;
+    tEarPerk = 0.3;
+    purrWant = 0.92;
+    tPawL = 0.4 + 0.35 * Math.sin(k.stateTime * 4.5);
+    tPawR = 0.4 + 0.35 * Math.sin(k.stateTime * 4.5 + 1.8);
+    if (k.petting > 0.2) {
+      k.stateDur = Math.min(k.stateDur + dt * 0.8, 9.0);
+    }
+    if (k.stateTime >= k.stateDur) {
+      setKittenState('IDLE', 2.4);
+    }
+  }
+  else if (k.state === 'NAP') {
+    // Cozy sunbeam nap in the golden morning light (wakes right up if you roll kibble or play!)
+    tNap = 1.0;
+    tHappyEyes = 1.0;
+    tEarPerk = 0.2;
+    purrWant = 0.55;
+    if (findInterestingKibble() || Math.hypot(world.ball.vx, world.ball.vz) > 0.5 || world.prism.spotActive > 0.3 || k.petting > 0.6) {
+      sound.playMeow('chirp');
+      k.fullness = Math.max(0.2, k.fullness - 0.3);
+      setKittenState('STRETCH', 2.2);
+    } else if (k.stateTime >= k.stateDur) {
+      k.fullness = 0.25;
+      setKittenState('STRETCH', 2.5);
+    }
+  }
+
+  // Smoothly damp all pose channels
+  k.yaw = dampAngle(k.yaw, k.targetYaw, 6.2, dt);
+  k.sitBlend = damp(k.sitBlend, tSit, 5.5, dt);
+  k.stretchBlend = damp(k.stretchBlend, tStretch, 5.0, dt);
+  k.crouchBlend = damp(k.crouchBlend, tCrouch, 7.5, dt);
+  k.bellyBlend = damp(k.bellyBlend, tBelly, 4.5, dt);
+  k.napBlend = damp(k.napBlend, tNap, 3.2, dt);
+  k.happyEyes = damp(k.happyEyes, tHappyEyes, 7.5, dt);
+  k.blinkClose = Math.max(blinkWave, k.happyEyes * 0.86);
+  k.pupilSize = damp(k.pupilSize, tPupil, 5.0, dt);
+  k.earPerk = damp(k.earPerk, tEarPerk, 6.0, dt);
+  k.pawLiftL = damp(k.pawLiftL, tPawL, 12.0, dt);
+  k.pawLiftR = damp(k.pawLiftR, tPawR, 12.0, dt);
+  k.eatNod = damp(k.eatNod, tEatNod, 11.0, dt);
+  k.tongueOut = damp(k.tongueOut, tTongue, 18.0, dt);
+  k.buttWiggle = damp(k.buttWiggle, tWiggle, 14.0, dt);
+
+  // Head look-at & adorable curious head-tilt
+  let desiredHeadYaw = 0, desiredHeadPitch = 0, desiredHeadRoll = 0;
+  if (!lookAtWorld && world.pointerActive && k.state !== 'NAP' && k.state !== 'EAT') {
+    lookAtWorld = world.pointerWorld;
+  }
+  if (lookAtWorld && k.state !== 'EAT' && k.state !== 'DRINK' && k.state !== 'NAP') {
+    const dx = lookAtWorld[0] - k.x;
+    const dy = lookAtWorld[1] - 0.42;
+    const dz = lookAtWorld[2] - k.z;
+    const worldAng = Math.atan2(dx, dz);
+    desiredHeadYaw = clamp(wrapAngle(worldAng - k.yaw), -0.82, 0.82);
+    const horiz = Math.hypot(dx, dz) + 0.001;
+    desiredHeadPitch = clamp(-Math.atan2(dy, horiz), -0.52, 0.55);
+    desiredHeadRoll = clamp(desiredHeadYaw * 0.22 + Math.sin(world.time * 0.9) * 0.05, -0.22, 0.22);
+  } else if (k.state === 'IDLE') {
+    desiredHeadRoll = Math.sin(world.time * 1.1) * 0.09;
+  }
+  if (k.petting > 0.15) {
+    desiredHeadPitch = -0.18; // leans head softly up into petting hand!
+    desiredHeadRoll = Math.sin(world.time * 3.5) * 0.14;
+  }
+
+  k.headYaw = damp(k.headYaw, desiredHeadYaw, 7.0, dt);
+  k.headPitch = damp(k.headPitch, desiredHeadPitch + k.eatNod * 0.72, 9.0, dt);
+  k.headRoll = damp(k.headRoll, desiredHeadRoll, 5.5, dt);
+  k.gazeX = clamp(k.headYaw * 0.45, -0.28, 0.28);
+  k.gazeY = clamp(-k.headPitch * 0.35, -0.25, 0.25);
+
+  // Tail wave, happy hop & collar bell spring physics
+  k.tailWag += dt * (k.state === 'STALK' ? 9.0 : (k.happy > 0.6 ? 3.8 : 2.3));
+  if (k.happyHop > 0 || k.happyHopVel > 0) {
+    k.happyHopVel -= 14.0 * dt;
+    k.happyHop += k.happyHopVel * dt;
+    if (k.happyHop < 0) { k.happyHop = 0; k.happyHopVel = 0; }
+  }
+  const bellAcc = -38.0 * k.bellSwing - 4.8 * k.bellVel;
+  k.bellVel += bellAcc * dt;
+  k.bellSwing += k.bellVel * dt;
+
+  // Send purr level to Web Audio
+  sound.purrTarget = purrWant;
+}
+
+// ============================================================================
+// 8. PHYSICS UPDATE (Rolling Kibble, Ramp Chute, Scoop, Yarn Ball, Prism, Dust)
+// ============================================================================
+function updateWorld(dt) {
+  world.time += dt;
+  const targetWarmth = clamp(world.eatenCount / 10, 0, 1);
+  world.warmth = damp(world.warmth, targetWarmth, 0.35, dt);
+
+  // Jar lid animation & gentle inviting wiggle while closed
+  world.jarOpenAnim = damp(world.jarOpenAnim, world.jarOpen ? 1 : 0, 6.5, dt);
+  world.jarWiggle = Math.max(0, world.jarWiggle - dt * 2.2);
+  if (!world.jarOpen && Math.sin(world.time * 1.45) > 0.96) {
+    world.jarWiggle = Math.max(world.jarWiggle, 0.52);
+  }
+  const tOpen = world.jarOpenAnim;
+  const arcY = Math.sin(tOpen * Math.PI) * 0.38;
+  world.lidPos[0] = lerp(JAR_POS[0], JAR_POS[0] + 0.46, tOpen);
+  world.lidPos[1] = lerp(0.67, 0.055, tOpen) + arcY + (world.jarOpen ? 0 : Math.sin(world.time * 22) * 0.012 * world.jarWiggle);
+  world.lidPos[2] = lerp(JAR_POS[2], JAR_POS[2] + 0.34, tOpen);
+  world.lidRot[2] = lerp(0, 0.12, tOpen) + (world.jarOpen ? 0 : Math.sin(world.time * 26) * 0.08 * world.jarWiggle);
+
+  // Auto scoop animation (dip into jar -> lift -> glide to bowl/ramp -> tilt & pour -> return)
+  if (world.scoop.autoAnim) {
+    const a = world.scoop.autoAnim;
+    a.t += dt;
+    const p = clamp(a.t / a.dur, 0, 1);
+    if (p < 0.28) {
+      const u = smoothstep(0, 0.28, p);
+      world.scoop.x = lerp(1.15, JAR_POS[0], u);
+      world.scoop.y = lerp(0.055, 0.86, u);
+      world.scoop.z = lerp(0.72, JAR_POS[2], u);
+      world.scoop.tilt = lerp(0, -0.35, u);
+    } else if (p < 0.44) {
+      const u = smoothstep(0.28, 0.44, p);
+      world.scoop.x = JAR_POS[0];
+      world.scoop.y = lerp(0.86, 0.56, Math.sin(u * Math.PI));
+      world.scoop.z = JAR_POS[2];
+      world.scoop.tilt = lerp(-0.35, 0.15, u);
+      if (!a.scooped && p > 0.36) {
+        a.scooped = true;
+        world.scoop.pelletsInScoop = 6;
+        sound.playScoopRustle();
+      }
+    } else if (p < 0.72) {
+      const u = smoothstep(0.44, 0.72, p);
+      const destY = a.dest === 'ramp' ? 0.96 : 0.52;
+      world.scoop.x = lerp(JAR_POS[0], a.tx, u);
+      world.scoop.y = lerp(0.86, destY, u) + Math.sin(u * Math.PI) * 0.18;
+      world.scoop.z = lerp(JAR_POS[2], a.tz, u);
+      world.scoop.tilt = lerp(0.15, 0.0, u);
+    } else if (p < 0.84) {
+      const u = smoothstep(0.72, 0.84, p);
+      world.scoop.tilt = lerp(0.0, -1.15, u);
+      if (!a.poured && p > 0.76) {
+        a.poured = true;
+        world.scoop.pelletsInScoop = 0;
+        if (a.dest === 'ramp') {
+          dropRampKibble(6);
+        } else {
+          sound.playScoopRustle();
+          for (let i = 0; i < 6; i++) {
+            const ang = Math.random() * Math.PI * 2;
+            const rad = Math.random() * 0.11;
+            spawnKibble(
+              a.tx + Math.cos(ang) * rad,
+              0.45 + i * 0.035,
+              a.tz + Math.sin(ang) * rad,
+              (Math.random() - 0.5) * 0.25,
+              -0.2,
+              (Math.random() - 0.5) * 0.25
+            );
+          }
+        }
+      }
+    } else {
+      const u = smoothstep(0.84, 1.0, p);
+      world.scoop.x = lerp(a.tx, 1.15, u);
+      world.scoop.y = lerp(0.52, 0.055, u) + Math.sin(u * Math.PI) * 0.12;
+      world.scoop.z = lerp(a.tz, 0.72, u);
+      world.scoop.tilt = lerp(-1.15, 0, u);
+    }
+    if (p >= 1) world.scoop.autoAnim = null;
+  } else if (!world.scoop.dragging) {
+    world.scoop.x = damp(world.scoop.x, 1.15, 6, dt);
+    world.scoop.y = damp(world.scoop.y, 0.055, 6, dt);
+    world.scoop.z = damp(world.scoop.z, 0.72, 6, dt);
+    world.scoop.tilt = damp(world.scoop.tilt, 0, 8, dt);
+  }
+
+  // Update Round Dry Food Kibble Physics ("ころころ!")
+  for (const p of world.kibbles) {
+    p.age += dt;
+    if (p === world.dragKibble) continue;
+
+    if (p.onRamp) {
+      // Roll smoothly down the curved beechwood chute!
+      p.rampVel += 0.92 * dt;
+      p.rampT += p.rampVel * dt;
+      const pos = evalRampPoint(Math.min(1, p.rampT));
+      p.x = pos[0] + p.rampLat;
+      p.y = pos[1] + p.r;
+      p.z = pos[2];
+      p.rx += p.rampVel * dt * 16.0;
+      p.rz -= p.rampVel * dt * 12.0;
+      if (Math.random() < dt * 7.5) {
+        sound.playKibbleClick('ramp', 0.45 + p.rampVel * 0.35);
+      }
+      if (p.rampT >= 1.0) {
+        p.onRamp = false;
+        const pEnd = evalRampPoint(1.0);
+        const pPrev = evalRampPoint(0.95);
+        const dir = V3.norm(V3.create(), [pEnd[0] - pPrev[0], 0.18, pEnd[2] - pPrev[2]]);
+        const launch = 1.25 + Math.random() * 0.55;
+        p.vx = dir[0] * launch + (Math.random() - 0.5) * 0.38;
+        p.vy = 0.42 + Math.random() * 0.25;
+        p.vz = dir[2] * launch + (Math.random() - 0.5) * 0.38;
+        sound.playKibbleClick('wood', 0.7);
+      }
+      continue;
+    }
+
+    // Gravity & integration
+    p.vy -= 9.2 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+
+    // Bowl containment & ceramic clatter
+    const bdx = p.x - BOWL_POS[0], bdz = p.z - BOWL_POS[2];
+    const bDist = Math.hypot(bdx, bdz);
+    const insideBowl = bDist < BOWL_R - p.r * 0.6 && p.y < 0.22;
+    p.inBowl = insideBowl && p.y < 0.14;
+
+    if (insideBowl) {
+      const floorY = 0.036 + Math.pow(bDist / BOWL_R, 2) * 0.055 + p.r;
+      if (p.y < floorY) {
+        if (Math.abs(p.vy) > 0.35) sound.playKibbleClick('ceramic', Math.min(1, Math.abs(p.vy) * 0.45));
+        p.y = floorY;
+        p.vy = -p.vy * 0.26;
+        p.vx *= Math.pow(0.08, dt);
+        p.vz *= Math.pow(0.08, dt);
+        // Gentle pull toward bowl center dish
+        p.vx -= bdx * 1.1 * dt;
+        p.vz -= bdz * 1.1 * dt;
+      }
+      if (bDist > BOWL_R - 0.055 && p.y < 0.14) {
+        const nx = bdx / (bDist || 1), nz = bdz / (bDist || 1);
+        p.x = BOWL_POS[0] + nx * (BOWL_R - 0.055);
+        p.z = BOWL_POS[2] + nz * (BOWL_R - 0.055);
+        const vn = p.vx * nx + p.vz * nz;
+        if (vn > 0) {
+          p.vx -= 1.45 * vn * nx;
+          p.vz -= 1.45 * vn * nz;
+          sound.playKibbleClick('ceramic', 0.45);
+        }
+      }
+    } else {
+      // Floor / mat height
+      const onMat = Math.abs(p.x) < 1.62 && Math.abs(p.z - 0.24) < 1.08;
+      const floorY = (onMat ? 0.014 : 0.0) + p.r;
+      if (p.y < floorY) {
+        if (Math.abs(p.vy) > 0.42) {
+          sound.playKibbleClick('wood', Math.min(1, Math.abs(p.vy) * 0.38));
+        }
+        p.y = floorY;
+        p.vy = -p.vy * 0.38;
+        if (Math.abs(p.vy) < 0.14) p.vy = 0;
+        const fric = onMat ? 0.22 : 0.38;
+        p.vx *= Math.pow(fric, dt);
+        p.vz *= Math.pow(fric, dt);
+      }
+      // Outer bowl wall bounce
+      if (bDist < BOWL_R + p.r && p.y < 0.15) {
+        const nx = bdx / (bDist || 1), nz = bdz / (bDist || 1);
+        p.x = BOWL_POS[0] + nx * (BOWL_R + p.r);
+        p.z = BOWL_POS[2] + nz * (BOWL_R + p.r);
+        p.vx = nx * 0.4; p.vz = nz * 0.4;
+        sound.playKibbleClick('ceramic', 0.4);
+      }
+    }
+
+    // Bounce gently off water bowl & glass jar & play-area edges
+    const bounceCyl = (cx, cz, rad, surf) => {
+      const dx = p.x - cx, dz = p.z - cz;
+      const d = Math.hypot(dx, dz);
+      if (d < rad + p.r && p.y < 0.5) {
+        const nx = dx / (d || 1), nz = dz / (d || 1);
+        p.x = cx + nx * (rad + p.r);
+        p.z = cz + nz * (rad + p.r);
+        const vn = p.vx * nx + p.vz * nz;
+        if (vn < 0) {
+          p.vx -= 1.6 * vn * nx;
+          p.vz -= 1.6 * vn * nz;
+          sound.playKibbleClick(surf, 0.5);
+        }
+      }
+    };
+    bounceCyl(WATER_POS[0], WATER_POS[2], WATER_R + 0.02, 'ceramic');
+    bounceCyl(JAR_POS[0], JAR_POS[2], JAR_R + 0.02, 'ceramic');
+
+    // Keep within reachable sunlit kitchen area
+    if (p.x < -2.1) { p.x = -2.1; p.vx = Math.abs(p.vx) * 0.55; }
+    if (p.x >  2.05) { p.x =  2.05; p.vx = -Math.abs(p.vx) * 0.55; }
+    if (p.z < -1.15) { p.z = -1.15; p.vz = Math.abs(p.vz) * 0.55; }
+    if (p.z >  1.65) { p.z =  1.65; p.vz = -Math.abs(p.vz) * 0.55; }
+
+    // True rolling rotation!
+    p.rx += (p.vz / p.r) * dt;
+    p.rz -= (p.vx / p.r) * dt;
+  }
+
+  // Pairwise soft separation between kibble pellets (especially nice stacking inside the bowl!)
+  for (let i = 0; i < world.kibbles.length; i++) {
+    const a = world.kibbles[i];
+    if (a.onRamp) continue;
+    for (let j = i + 1; j < world.kibbles.length; j++) {
+      const b = world.kibbles[j];
+      if (b.onRamp) continue;
+      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+      const d = Math.hypot(dx, dy, dz);
+      const minD = (a.r + b.r) * 0.96;
+      if (d > 0.0001 && d < minD) {
+        const push = (minD - d) * 0.5;
+        const nx = dx / d, ny = dy / d, nz = dz / d;
+        a.x -= nx * push; a.y = Math.max(a.r, a.y - ny * push * 0.35); a.z -= nz * push;
+        b.x += nx * push; b.y = Math.max(b.r, b.y + ny * push * 0.35); b.z += nz * push;
+      }
+    }
+  }
+
+  // Update Yarn Bell Ball physics
+  const b = world.ball;
+  if (!b.dragging) {
+    b.vy -= 8.8 * dt;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.z += b.vz * dt;
+    const onMat = Math.abs(b.x) < 1.62 && Math.abs(b.z - 0.24) < 1.08;
+    const floorY = (onMat ? 0.014 : 0.0) + b.r;
+    if (b.y < floorY) {
+      if (Math.abs(b.vy) > 0.5) sound.playBell(0.06);
+      b.y = floorY;
+      b.vy = -b.vy * 0.45;
+      if (Math.abs(b.vy) < 0.15) b.vy = 0;
+      const fric = onMat ? 0.28 : 0.45;
+      b.vx *= Math.pow(fric, dt);
+      b.vz *= Math.pow(fric, dt);
+    }
+    b.rx += (b.vz / b.r) * dt;
+    b.rz -= (b.vx / b.r) * dt;
+
+    // Bounce off walls & kitchen obstacles
+    if (b.x < -2.1) { b.x = -2.1; b.vx = Math.abs(b.vx) * 0.68; sound.playBell(0.06); }
+    if (b.x >  2.05) { b.x =  2.05; b.vx = -Math.abs(b.vx) * 0.68; sound.playBell(0.06); }
+    if (b.z < -1.1) { b.z = -1.1; b.vz = Math.abs(b.vz) * 0.68; sound.playBell(0.06); }
+    if (b.z >  1.6) { b.z =  1.6; b.vz = -Math.abs(b.vz) * 0.68; sound.playBell(0.06); }
+
+    const ballObst = [[BOWL_POS[0], BOWL_POS[2], BOWL_R + 0.04], [WATER_POS[0], WATER_POS[2], WATER_R + 0.04], [JAR_POS[0], JAR_POS[2], JAR_R + 0.04]];
+    for (const [ox, oz, orad] of ballObst) {
+      const dx = b.x - ox, dz = b.z - oz;
+      const d = Math.hypot(dx, dz);
+      if (d < orad + b.r && d > 0.001) {
+        const nx = dx / d, nz = dz / d;
+        b.x = ox + nx * (orad + b.r);
+        b.z = oz + nz * (orad + b.r);
+        const vn = b.vx * nx + b.vz * nz;
+        if (vn < 0) {
+          b.vx -= 1.65 * vn * nx;
+          b.vz -= 1.65 * vn * nz;
+          sound.playBell(0.07);
+        }
+      }
+    }
+  }
+
+  // Update Water Ripples
+  for (let i = 0; i < 4; i++) {
+    if (world.ripples[i][3] > 0.001) {
+      world.ripples[i][2] += dt;
+      if (world.ripples[i][2] > 2.4) world.ripples[i][3] = 0;
+    }
+  }
+
+  // Update Sun-Catcher Prism & Dancing Rainbow Light Spot
+  const pr = world.prism;
+  const pAcc = -16.0 * pr.swing - 1.6 * pr.swingVel;
+  pr.swingVel += pAcc * dt;
+  pr.swing += pr.swingVel * dt;
+  if (pr.spotTimer > 0) {
+    pr.spotTimer -= dt;
+    pr.spotActive = damp(pr.spotActive, 1.0, 4.0, dt);
+    pr.spotAngle += dt * 1.15;
+    pr.spotX = -0.22 + Math.sin(pr.spotAngle * 1.1) * 0.92;
+    pr.spotZ = 0.25 + Math.cos(pr.spotAngle * 1.65) * 0.52;
+  } else {
+    pr.spotActive = damp(pr.spotActive, 0.0, 2.2, dt);
+  }
+
+  // Curtain breeze
+  world.curtainBoost = Math.max(0, world.curtainBoost - dt * 0.9);
+  world.curtainSway = Math.sin(world.time * 1.35) * (0.04 + world.curtainBoost * 0.14);
+
+  // Subtle cozy kettle morning steam wisp on the counter
+  if (Math.random() < dt * (1.8 + world.warmth * 2.5)) {
+    spawnParticle(
+      -0.88 + (Math.random() - 0.5) * 0.08, 2.18, -1.78,
+      0.06 + (Math.random() - 0.5) * 0.06, 0.28 + Math.random() * 0.15, 0.03,
+      2.2, 0.12 + Math.random() * 0.08, [1.0, 0.98, 0.94], 'steam'
+    );
+  }
+
+  // Update Particles
+  for (let i = world.particles.length - 1; i >= 0; i--) {
+    const pt = world.particles[i];
+    pt.age += dt;
+    if (pt.age >= pt.life) {
+      world.particles.splice(i, 1);
+      continue;
+    }
+    if (pt.kind === 'crumb') {
+      pt.vy -= 7.5 * dt;
+      pt.y = Math.max(0.015, pt.y + pt.vy * dt);
+    } else {
+      pt.y += pt.vy * dt;
+    }
+    pt.x += pt.vx * dt;
+    pt.z += pt.vz * dt;
+  }
+
+  // Update Kitten AI & Animation
+  updateKitten(dt);
+}
+
+// ============================================================================
+// 9. CAMERA & RAYCASTING (Responsive Landscape & Portrait Framing + Touch)
+// ============================================================================
+const camera = {
+  pos: V3.create(0.0, 2.18, 4.32),
+  target: V3.create(0.0, 0.50, -0.10),
+  fov: 37 * Math.PI / 180,
+  aspect: 1,
+  view: M4.create(),
+  proj: M4.create(),
+  viewProj: M4.create(),
+  invViewProj: M4.create()
+};
+
+function updateCamera(dt) {
+  const aspect = canvas.width / Math.max(1, canvas.height);
+  camera.aspect = aspect;
+  // Pull back cleanly on portrait/narrow screens so jar, ramp, bowls & kitten all fit comfortably!
+  const narrow = clamp(1.22 - aspect, 0, 0.72);
+  const baseZ = 4.28 + narrow * 2.45;
+  const baseY = 2.15 + narrow * 1.10;
+  const fovDeg = 37 + narrow * 11;
+  camera.fov = fovDeg * Math.PI / 180;
+
+  const swayX = Math.sin(world.time * 0.35) * 0.05 + kitten.x * 0.07;
+  const swayY = Math.cos(world.time * 0.28) * 0.025;
+  camera.pos[0] = damp(camera.pos[0], swayX, 2.0, dt);
+  camera.pos[1] = damp(camera.pos[1], baseY + swayY, 2.0, dt);
+  camera.pos[2] = damp(camera.pos[2], baseZ, 2.0, dt);
+
+  camera.target[0] = damp(camera.target[0], kitten.x * 0.14, 2.2, dt);
+  camera.target[1] = 0.46;
+  camera.target[2] = 0.04;
+
+  M4.lookAt(camera.view, camera.pos, camera.target, [0, 1, 0]);
+  M4.perspective(camera.proj, camera.fov, aspect, 0.15, 28.0);
+  M4.mul(camera.viewProj, camera.proj, camera.view);
+  M4.invert(camera.invViewProj, camera.viewProj);
+}
+
+function screenToRay(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = 1 - ((clientY - rect.top) / rect.height) * 2;
+  const pNear = M4.transformPoint(camera.invViewProj, [nx, ny, -1]);
+  const pFar  = M4.transformPoint(camera.invViewProj, [nx, ny, 1]);
+  const dir = V3.norm(V3.create(), [pFar[0] - pNear[0], pFar[1] - pNear[1], pFar[2] - pNear[2]]);
+  return { orig: pNear, dir };
+}
+
+function rayPlaneY(ray, yVal = 0) {
+  if (Math.abs(ray.dir[1]) < 0.0001) return null;
+  const t = (yVal - ray.orig[1]) / ray.dir[1];
+  if (t < 0) return null;
+  return [ray.orig[0] + ray.dir[0] * t, yVal, ray.orig[2] + ray.dir[2] * t];
+}
+
+function raySphereHit(ray, cx, cy, cz, r) {
+  const ox = ray.orig[0] - cx, oy = ray.orig[1] - cy, oz = ray.orig[2] - cz;
+  const b = ox * ray.dir[0] + oy * ray.dir[1] + oz * ray.dir[2];
+  const c = ox * ox + oy * oy + oz * oz - r * r;
+  const disc = b * b - c;
+  if (disc < 0) return -1;
+  const t = -b - Math.sqrt(disc);
+  return t > 0 ? t : -1;
+}
+
+// ============================================================================
+// 10. POINTER INTERACTION (Tap & Drag Only — Tactile, Forgiving, Delightful!)
+// ============================================================================
+function onPointerDown(e) {
+  e.preventDefault();
+  sound.unlock();
+  canvas.setPointerCapture(e.pointerId);
+
+  const ray = screenToRay(e.clientX, e.clientY);
+  const floorPt = rayPlaneY(ray, 0.04) || [0, 0.04, 0.3];
+  world.pointerWorld = floorPt;
+  world.pointerActive = true;
+  world.lastPointerX = e.clientX;
+  world.lastPointerY = e.clientY;
+  world.pointerDownTime = world.time;
+  world.pointerMoved = 0;
+  world.dragTarget = null;
+  world.dragKibble = null;
+
+  // 1. Check Crystal Sun-Catcher Prism (top-left dangling gem!)
+  if (raySphereHit(ray, PRISM_POS[0], PRISM_POS[1], PRISM_POS[2], 0.34) > 0) {
+    world.prism.swingVel += 8.5;
+    world.prism.spotTimer = 8.5;
+    world.curtainBoost = 1.0;
+    sound.playPrismChime();
+    nudgeKittenJoy(PRISM_POS[0], PRISM_POS[1], PRISM_POS[2]);
+    return;
+  }
+
+  // 2. Check Kitten (Petting & Tickling!)
+  const kitHit = raySphereHit(ray, kitten.x, 0.34, kitten.z, 0.44);
+  if (kitHit > 0) {
+    world.dragTarget = 'kitten';
+    kitten.petting = 1.0;
+    if (kitten.meowCooldown <= 0) {
+      sound.playMeow(kitten.state === 'BELLY_ROLL' ? 'chirp' : 'happy');
+      kitten.meowCooldown = 1.8;
+    }
+    // Check if tapped near collar bell -> sweet jingle!
+    const bellX = kitten.x + Math.sin(kitten.yaw) * 0.20;
+    const bellZ = kitten.z + Math.cos(kitten.yaw) * 0.20;
+    if (raySphereHit(ray, bellX, 0.36, bellZ, 0.16) > 0) {
+      sound.playBell(0.11);
+      kitten.bellVel += 12.0;
+    }
+    nudgeKittenJoy(kitten.x, 0.48, kitten.z);
+    return;
+  }
+
+  // 3. Check Cork Lid
+  if (raySphereHit(ray, world.lidPos[0], world.lidPos[1] + 0.06, world.lidPos[2], 0.28) > 0) {
+    if (!world.jarOpen) {
+      openJar(true);
+    } else {
+      world.jarOpen = false;
+      sound.playCorkPop(false);
+    }
+    return;
+  }
+
+  // 4. Check Glass Kibble Jar (Tap to open / scoop, OR drag directly from jar to pour!)
+  if (raySphereHit(ray, JAR_POS[0], 0.35, JAR_POS[2], 0.38) > 0) {
+    if (!world.jarOpen) {
+      openJar(true);
+      return;
+    }
+    world.dragTarget = 'scoop';
+    world.scoop.autoAnim = null;
+    world.scoop.dragging = true;
+    world.scoop.pelletsInScoop = 6;
+    world.scoop.x = JAR_POS[0];
+    world.scoop.y = 0.72;
+    world.scoop.z = JAR_POS[2];
+    sound.playScoopRustle();
+    return;
+  }
+
+  // 5. Check Wooden Scoop directly
+  if (raySphereHit(ray, world.scoop.x, world.scoop.y + 0.06, world.scoop.z, 0.26) > 0) {
+    if (!world.jarOpen) openJar(false);
+    world.dragTarget = 'scoop';
+    world.scoop.autoAnim = null;
+    world.scoop.dragging = true;
+    world.scoop.pelletsInScoop = 6;
+    sound.playScoopRustle();
+    return;
+  }
+
+  // 6. Check Wooden Rolling Ramp ("ころころスロープ")
+  for (let s = 0; s <= 5; s++) {
+    const rp = evalRampPoint(s / 5);
+    if (raySphereHit(ray, rp[0], rp[1] + 0.04, rp[2], 0.24) > 0) {
+      if (!world.jarOpen) openJar(false);
+      dropRampKibble(5);
+      return;
+    }
+  }
+
+  // 7. Check Yarn Bell Toy Ball
+  if (raySphereHit(ray, world.ball.x, world.ball.y, world.ball.z, 0.24) > 0) {
+    world.dragTarget = 'ball';
+    world.ball.dragging = true;
+    sound.playBell(0.09);
+    return;
+  }
+
+  // 8. Check Water Bowl (Create sparkling 3D water ripples!)
+  if (raySphereHit(ray, WATER_POS[0], 0.09, WATER_POS[2], WATER_R + 0.05) > 0) {
+    world.dragTarget = 'water';
+    addRipple(
+      clamp(floorPt[0], WATER_POS[0] - 0.16, WATER_POS[0] + 0.16),
+      clamp(floorPt[2], WATER_POS[2] - 0.16, WATER_POS[2] + 0.16),
+      1.0
+    );
+    sound.playWaterDrop(false);
+    // Invite kitten to come drink or sniff if not eating!
+    if (kitten.state === 'IDLE' || kitten.state === 'GROOM') {
+      kitten.thirst = Math.max(kitten.thirst, 0.92);
+    }
+    return;
+  }
+
+  // 9. Check Flower Food Bowl
+  if (raySphereHit(ray, BOWL_POS[0], 0.08, BOWL_POS[2], BOWL_R + 0.06) > 0) {
+    triggerAutoScoop('bowl', BOWL_POS[0], BOWL_POS[2]);
+    return;
+  }
+
+  // 10. Check Individual Loose Kibble Pellet (Flick/Roll it!)
+  let bestK = null, bestD = 0.22;
+  for (const p of world.kibbles) {
+    if (p.onRamp) continue;
+    const d = Math.hypot(p.x - floorPt[0], p.z - floorPt[2]);
+    if (d < bestD) { bestD = d; bestK = p; }
+  }
+  if (bestK) {
+    world.dragTarget = 'kibble';
+    world.dragKibble = bestK;
+    bestK.batted = false;
+    sound.playKibbleClick('wood', 0.55);
+    return;
+  }
+
+  // 11. Tap left sunlit window area -> swish curtain & launch rainbow prism!
+  if (ray.dir[0] < -0.35 && ray.dir[1] > -0.1) {
+    world.prism.swingVel += 6.5;
+    world.prism.spotTimer = 7.5;
+    world.curtainBoost = 1.0;
+    sound.playPrismChime();
+    return;
+  }
+
+  // 12. Tap anywhere on the sunlit wooden floor / mat -> Toss & roll a round kibble there!
+  world.dragTarget = 'floor';
+  if (!world.jarOpen) openJar(false);
+  const tx = clamp(floorPt[0], -1.75, 1.70);
+  const tz = clamp(floorPt[2], -0.85, 1.45);
+  // Launch gently from jar side toward tapped spot so it rolls "ころころ"!
+  const sx = lerp(tx, JAR_POS[0], 0.32);
+  const sz = lerp(tz, JAR_POS[2], 0.32);
+  spawnKibble(sx, 0.36, sz, (tx - sx) * 2.2, 0.55, (tz - sz) * 2.2);
+  sound.playKibbleClick('wood', 0.4);
+}
+
+function onPointerMove(e) {
+  const dxPix = e.clientX - world.lastPointerX;
+  const dyPix = e.clientY - world.lastPointerY;
+  world.pointerMoved += Math.hypot(dxPix, dyPix);
+  world.lastPointerX = e.clientX;
+  world.lastPointerY = e.clientY;
+
+  const ray = screenToRay(e.clientX, e.clientY);
+  const floorPt = rayPlaneY(ray, 0.06);
+  if (floorPt) world.pointerWorld = floorPt;
+  world.pointerActive = true;
+
+  if (!world.dragTarget) return;
+
+  if (world.dragTarget === 'kitten') {
+    if (Math.hypot(dxPix, dyPix) > 2.0) {
+      kitten.petting = 1.0;
+      if (Math.random() < 0.25) {
+        nudgeKittenJoy(kitten.x, 0.45, kitten.z);
+      }
+    }
+  } else if (world.dragTarget === 'scoop') {
+    const pt = rayPlaneY(ray, 0.55);
+    if (pt) {
+      world.scoop.x = clamp(pt[0], -1.75, 1.85);
+      world.scoop.y = 0.55;
+      world.scoop.z = clamp(pt[2], -0.85, 1.45);
+      world.scoop.tilt = clamp(-dxPix * 0.015, -0.45, 0.45);
+      // Refill if dipped back over the open jar!
+      if (Math.hypot(world.scoop.x - JAR_POS[0], world.scoop.z - JAR_POS[2]) < 0.35 && world.scoop.pelletsInScoop < 6) {
+        world.scoop.pelletsInScoop = 6;
+        sound.playScoopRustle();
+      }
+    }
+  } else if (world.dragTarget === 'ball' && floorPt) {
+    const nx = clamp(floorPt[0], -2.0, 2.0);
+    const nz = clamp(floorPt[2], -1.0, 1.5);
+    world.ball.vx = clamp((nx - world.ball.x) * 14, -4.2, 4.2);
+    world.ball.vz = clamp((nz - world.ball.z) * 14, -4.2, 4.2);
+    world.ball.x = nx;
+    world.ball.z = nz;
+    world.ball.y = world.ball.r + 0.04;
+    if (Math.hypot(dxPix, dyPix) > 10 && Math.random() < 0.25) sound.playBell(0.05);
+  } else if (world.dragTarget === 'kibble' && world.dragKibble && floorPt) {
+    const p = world.dragKibble;
+    const nx = clamp(floorPt[0], -1.9, 1.9);
+    const nz = clamp(floorPt[2], -0.95, 1.5);
+    p.vx = clamp((nx - p.x) * 16, -3.8, 3.8);
+    p.vz = clamp((nz - p.z) * 16, -3.8, 3.8);
+    p.x = nx; p.z = nz; p.y = 0.07;
+  } else if (world.dragTarget === 'water' && floorPt) {
+    if (Math.hypot(dxPix, dyPix) > 8) {
+      addRipple(
+        clamp(floorPt[0], WATER_POS[0] - 0.16, WATER_POS[0] + 0.16),
+        clamp(floorPt[2], WATER_POS[2] - 0.16, WATER_POS[2] + 0.16),
+        0.75
+      );
+      sound.playWaterDrop(true);
+    }
+  } else if (world.dragTarget === 'floor' && floorPt) {
+    // Drag across the sunlit wooden floor to roll a joyful trail of round kibble!
+    if (world.time - world.floorTrailTimer > 0.26 && Math.hypot(dxPix, dyPix) > 4) {
+      world.floorTrailTimer = world.time;
+      const tx = clamp(floorPt[0], -1.75, 1.70);
+      const tz = clamp(floorPt[2], -0.85, 1.45);
+      spawnKibble(tx, 0.18, tz, clamp(dxPix * 0.08, -1.8, 1.8), 0.25, clamp(dyPix * 0.08, -1.8, 1.8));
+      sound.playKibbleClick('wood', 0.42);
+    }
+  }
+}
+
+function onPointerUp(e) {
+  const wasTap = world.pointerMoved < 16 && (world.time - world.pointerDownTime) < 0.42;
+
+  if (world.dragTarget === 'scoop') {
+    world.scoop.dragging = false;
+    if (wasTap) {
+      // Quick tap on jar or scoop -> auto-scoop gracefully to bowl or wooden ramp!
+      const goRamp = (world.eatenCount % 3 === 2);
+      if (goRamp) {
+        const rp = evalRampPoint(0.03);
+        triggerAutoScoop('ramp', rp[0], rp[2]);
+      } else {
+        triggerAutoScoop('bowl', BOWL_POS[0], BOWL_POS[2]);
+      }
+    } else if (world.scoop.pelletsInScoop > 0) {
+      // Pour kibble right where the child released the scoop!
+      const sx = world.scoop.x, sy = world.scoop.y, sz = world.scoop.z;
+      const topRamp = evalRampPoint(0.04);
+      if (Math.hypot(sx - topRamp[0], sz - topRamp[2]) < 0.45) {
+        dropRampKibble(world.scoop.pelletsInScoop);
+      } else {
+        sound.playScoopRustle();
+        for (let i = 0; i < world.scoop.pelletsInScoop; i++) {
+          spawnKibble(
+            sx + (Math.random() - 0.5) * 0.12,
+            sy - 0.04 + i * 0.03,
+            sz + (Math.random() - 0.5) * 0.12,
+            (Math.random() - 0.5) * 0.6,
+            -0.25,
+            (Math.random() - 0.5) * 0.6
+          );
+        }
+      }
+      world.scoop.pelletsInScoop = 0;
+    }
+  } else if (world.dragTarget === 'ball') {
+    world.ball.dragging = false;
+    if (wasTap) {
+      // Friendly tap flicks the yarn ball playfully across the mat toward the kitten!
+      const ang = Math.atan2(kitten.x - world.ball.x, kitten.z - world.ball.z) + (Math.random() - 0.5) * 0.5;
+      world.ball.vx = Math.sin(ang) * 2.15;
+      world.ball.vz = Math.cos(ang) * 2.15;
+      world.ball.vy = 0.55;
+      sound.playBell(0.11);
+    }
+  } else if (world.dragTarget === 'kibble' && world.dragKibble) {
+    if (wasTap) {
+      // Tap a pellet -> roll it playfully across the floor!
+      const p = world.dragKibble;
+      const ang = Math.atan2(kitten.x - p.x, kitten.z - p.z) + (Math.random() - 0.5) * 0.7;
+      p.vx = Math.sin(ang) * 1.45;
+      p.vz = Math.cos(ang) * 1.45;
+      p.vy = 0.35;
+    }
+    world.dragKibble = null;
+  }
+
+  world.dragTarget = null;
+  if (e.pointerType === 'touch') world.pointerActive = false;
+}
+
+canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
+window.addEventListener('pointermove', onPointerMove, { passive: true });
+window.addEventListener('pointerup', onPointerUp, { passive: true });
+window.addEventListener('pointercancel', onPointerUp, { passive: true });
+
+// ============================================================================
+// 11. DRAW QUEUE & HIERARCHICAL KITTEN RENDERER
+// ============================================================================
+const drawListOpaque = [];
+const drawListTrans = [];
+const scratchMat = M4.create();
+const scratchNorm = new Float32Array(9);
+const scratchLightMVP = M4.create();
+
+function queueMesh(mesh, modelMat, opts) {
+  const item = {
+    mesh,
+    model: new Float32Array(modelMat),
+    tex: opts.tex || textures.white,
+    color: opts.color || [1, 1, 1, 1],
+    rough: opts.rough !== undefined ? opts.rough : 0.65,
+    metal: opts.metal || 0.0,
+    rim: opts.rim || 0.0,
+    rimColor: opts.rimColor || [1.0, 0.90, 0.70],
+    sss: opts.sss || 0.0,
+    texScale: opts.texScale || [1, 1],
+    matType: opts.matType || 0,
+    extra: opts.extra || [0, 0, 0, 0],
+    castShadow: opts.castShadow !== false,
+    additive: !!opts.additive,
+    noDepthWrite: !!opts.noDepthWrite
+  };
+  if (opts.transparent) drawListTrans.push(item);
+  else drawListOpaque.push(item);
+}
+
+function pushTRS(base, x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
+  const m = base ? M4.copy(M4.create(), base) : M4.create();
+  if (x || y || z) M4.translate(m, x, y, z);
+  if (ry) M4.rotY(m, ry);
+  if (rx) M4.rotX(m, rx);
+  if (rz) M4.rotZ(m, rz);
+  if (sx !== 1 || sy !== 1 || sz !== 1) M4.scale(m, sx, sy, sz);
+  return m;
+}
+
+// Build complete articulated 3D Ginger Tabby White-Socks Kitten into draw queue!
+function buildKittenDrawList() {
+  const k = kitten;
+  const breath = Math.sin(world.time * (k.state === 'NAP' ? 2.1 : 3.4)) * 0.018;
+  const furOpts = (part, sockY = 0, extraZ = 0.6) => ({
+    matType: 1,
+    extra: [part, sockY, extraZ, 0],
+    rim: 0.62,
+    rimColor: [1.0, 0.87, 0.62],
+    sss: part === 4 || part === 6 ? 0.55 : 0.14
+  });
+
+  // Root body height & posture from blended states
+  const walkBob = Math.abs(Math.sin(k.walkPhase)) * 0.025 * Math.min(1, k.speed);
+  const sitDrop = k.sitBlend * 0.04;
+  const crouchDrop = k.crouchBlend * 0.10;
+  const napDrop = k.napBlend * 0.15;
+  const bellyDrop = k.bellyBlend * 0.145;
+  const baseY = 0.315 + walkBob + k.happyHop - sitDrop - crouchDrop - napDrop - bellyDrop;
+
+  const pitch =
+    -k.sitBlend * 0.34 +
+    k.stretchBlend * 0.36 +
+    k.crouchBlend * 0.16 +
+    k.eatNod * 0.22;
+  const roll = k.bellyBlend * Math.PI * 0.94 + k.napBlend * 0.25 + k.buttWiggle * 0.08;
+
+  const root = pushTRS(null, k.x, baseY, k.z, pitch, k.yaw + k.buttWiggle * 0.08, roll);
+
+  // 1. Torso (smooth plump ginger tabby body with cream bib & belly)
+  const torsoMat = pushTRS(root, 0, 0, 0, 0, 0, 0, 1.0 + breath + k.napBlend * 0.12, 1.0 + breath * 1.4 - k.napBlend * 0.14, 1.0 + k.stretchBlend * 0.22 - k.sitBlend * 0.10 - k.napBlend * 0.12);
+  queueMesh(meshes.kittenTorso, torsoMat, furOpts(0));
+
+  // Fluffy cream chest tuft
+  const chestMat = pushTRS(root, 0, -0.02 + k.sitBlend * 0.04, 0.26, 0.2, 0, 0, 0.125, 0.13, 0.11);
+  queueMesh(meshes.sphere, chestMat, furOpts(5));
+
+  // 2. Neck & Head Hierarchy
+  const headBaseY = 0.175 + k.sitBlend * 0.12 - k.stretchBlend * 0.16 - k.crouchBlend * 0.06 - k.eatNod * 0.12 - k.napBlend * 0.08;
+  const headBaseZ = 0.285 + k.stretchBlend * 0.08 - k.sitBlend * 0.04 + k.eatNod * 0.06 - k.napBlend * 0.06;
+  const headPivot = pushTRS(
+    root,
+    k.napBlend * 0.10,
+    headBaseY,
+    headBaseZ,
+    k.headPitch - pitch * 0.72 + k.napBlend * 0.35,
+    k.headYaw + k.napBlend * 0.95,
+    k.headRoll - roll * 0.32
+  );
+
+  queueMesh(meshes.kittenHead, headPivot, furOpts(1));
+
+  // Cute ω-shaped plump white muzzle cheeks & chin
+  queueMesh(meshes.sphere, pushTRS(headPivot, -0.044, -0.052, 0.175, 0, 0, 0, 0.054, 0.044, 0.050), furOpts(5));
+  queueMesh(meshes.sphere, pushTRS(headPivot,  0.044, -0.052, 0.175, 0, 0, 0, 0.054, 0.044, 0.050), furOpts(5));
+  queueMesh(meshes.sphere, pushTRS(headPivot,  0.000, -0.082, 0.162, 0, 0, 0, 0.050, 0.036, 0.044), furOpts(5));
+
+  // Tiny soft pink nose!
+  queueMesh(meshes.sphere, pushTRS(headPivot, 0, -0.024, 0.214, 0.15, 0, 0, 0.025, 0.019, 0.020), furOpts(6, 0, 0.30));
+
+  // Cute little pink tongue when licking lips or lapping water!
+  if (k.tongueOut > 0.05) {
+    const tMat = pushTRS(headPivot, 0, -0.072 - k.tongueOut * 0.015, 0.185 + k.tongueOut * 0.035, 0.45, 0, 0, 0.024, 0.012, 0.036 * k.tongueOut);
+    queueMesh(meshes.sphere, tMat, { color: [0.95, 0.56, 0.60, 1], rough: 0.28, sss: 0.4 });
+  }
+
+  // Big Expressive Glossy Kitten Eyes + Smooth Blinking Eyelids
+  for (const side of [-1, 1]) {
+    const ex = side * 0.078, ey = 0.016, ez = 0.164;
+    const eyeMat = pushTRS(headPivot, ex, ey, ez, 0, side * 0.14, 0, 0.050, 0.051, 0.046);
+    queueMesh(meshes.sphere, eyeMat, {
+      matType: 2,
+      extra: [k.pupilSize, k.gazeX, k.gazeY, k.happyEyes],
+      castShadow: false
+    });
+
+    // Upper eyelid slides cleanly over the front of the eyeball on blink / happy squint / nap
+    const lidPitch = lerp(-0.48, 1.32, k.blinkClose);
+    const lidMat = pushTRS(headPivot, ex, ey + 0.002, ez + 0.002, lidPitch, side * 0.14, 0);
+    queueMesh(meshes.kittenEyelid, lidMat, furOpts(7));
+  }
+
+  // Cupped Ginger Ears with Soft Sunlit Translucent Pink Inner Ears!
+  for (const side of [-1, 1]) {
+    const tw = side < 0 ? k.earTwitchL : k.earTwitchR;
+    const earTilt = (1.0 - k.earPerk) * 0.34 + tw * 0.28;
+    const earBase = pushTRS(headPivot, side * 0.125, 0.132, 0.01, 0.14 - k.earPerk * 0.15, side * 0.22, -side * (0.34 + earTilt));
+    queueMesh(meshes.kittenEar, earBase, furOpts(4));
+    // Soft pink inner ear
+    const innerMat = pushTRS(earBase, 0, 0.012, 0.014, 0, 0, 0, 0.66, 0.72, 0.55);
+    queueMesh(meshes.kittenEar, innerMat, furOpts(6, 0, 0.78));
+  }
+
+  // Delicate Fine Cream Whiskers (3 per cheek!)
+  for (const side of [-1, 1]) {
+    for (let w = -1; w <= 1; w++) {
+      const wm = pushTRS(headPivot, side * 0.11, -0.048 + w * 0.016, 0.168, w * 0.08, side * 0.18, w * 0.14 * side, 0.12, 0.0032, 0.0032);
+      queueMesh(meshes.box, wm, { color: [0.98, 0.96, 0.92, 1], rough: 0.5, castShadow: false });
+    }
+  }
+
+  // Soft Pastel Coral-Rose Ribbon Collar + Gleaming Gold Bell!
+  const collarBase = pushTRS(root, 0, headBaseY - 0.10, headBaseZ - 0.06, 0.45 - pitch * 0.4, k.headYaw * 0.3, 0);
+  queueMesh(meshes.cyl, pushTRS(collarBase, 0, 0, 0, 0, 0, 0, 0.132, 0.036, 0.132), {
+    color: [0.89, 0.46, 0.48, 1], rough: 0.72, rim: 0.25
+  });
+  const bellMat = pushTRS(collarBase, Math.sin(k.bellSwing) * 0.025, -0.042, 0.125, 0, 0, k.bellSwing, 0.030, 0.030, 0.030);
+  queueMesh(meshes.sphereLow, bellMat, {
+    color: [0.96, 0.78, 0.30, 1], rough: 0.18, metal: 0.92
+  });
+
+  // 3. Four Articulated Legs with Crisp Snowy-White Socks & Tiny Pink Paw Pads!
+  const gait = Math.min(1, k.speed * 1.15);
+  const legSpecs = [
+    { side: -1, front: true,  phase: 0,             lift: k.pawLiftL },
+    { side:  1, front: true,  phase: Math.PI,       lift: k.pawLiftR },
+    { side: -1, front: false, phase: Math.PI * 0.9, lift: k.bellyBlend * 0.35 },
+    { side:  1, front: false, phase: Math.PI * 1.9, lift: k.bellyBlend * 0.35 }
+  ];
+
+  for (const lg of legSpecs) {
+    const lx = lg.side * (lg.front ? 0.105 : 0.118);
+    const ly = lg.front ? -0.08 : -0.075;
+    const lz = lg.front ? 0.185 : -0.205;
+
+    let hipPitch = Math.sin(k.walkPhase + lg.phase) * 0.58 * gait;
+    let kneePitch = Math.max(0, -Math.cos(k.walkPhase + lg.phase)) * 0.52 * gait;
+    let hipRoll = 0;
+
+    if (lg.front) {
+      // Sitting: front legs straight & neat together; Stretch: reach far forward!
+      hipPitch += -k.sitBlend * 0.08 - k.stretchBlend * 1.18 - lg.lift * 1.05 - k.napBlend * 0.95;
+      kneePitch += k.crouchBlend * 0.45 + lg.lift * 0.55 + k.napBlend * 1.1;
+      hipRoll = lg.side * (-k.sitBlend * 0.08 + k.bellyBlend * 0.38);
+    } else {
+      // Back legs fold neatly under haunches when sitting or napping!
+      hipPitch += -k.sitBlend * 0.95 + k.stretchBlend * 0.24 - k.crouchBlend * 0.42 - k.napBlend * 1.05;
+      kneePitch += k.sitBlend * 1.15 + k.crouchBlend * 0.65 + k.napBlend * 1.15;
+      hipRoll = lg.side * (k.sitBlend * 0.16 + k.bellyBlend * 0.45);
+    }
+
+    const upperPivot = pushTRS(root, lx, ly, lz, hipPitch - pitch * (lg.front ? 0.55 : 0.45), 0, hipRoll);
+    const upperGeo = pushTRS(upperPivot, 0, -0.075, 0);
+    queueMesh(meshes.kittenLegUpper, upperGeo, furOpts(2, -0.18)); // ginger tabby upper leg
+
+    const lowerPivot = pushTRS(upperPivot, 0, -0.135, 0, kneePitch, 0, 0);
+    const lowerGeo = pushTRS(lowerPivot, 0, -0.068, 0);
+    // Crisp white sock starting right around mid-ankle!
+    queueMesh(meshes.kittenLegLower, lowerGeo, furOpts(2, 0.015));
+
+    // Plump Snowy-White Sock Paw!
+    const pawPivot = pushTRS(lowerPivot, 0, -0.145, 0.015, -kneePitch * 0.55 - hipPitch * 0.35, 0, 0);
+    queueMesh(meshes.kittenPaw, pawPivot, furOpts(5));
+
+    // Adorable Tiny Pink Paw Pads (Nikukyuu!) underneath each white sock!
+    queueMesh(meshes.sphereLow, pushTRS(pawPivot, 0, -0.025, 0.01, 0, 0, 0, 0.024, 0.010, 0.022), furOpts(6, 0, 0.45));
+    for (const toe of [-1, 0, 1]) {
+      queueMesh(meshes.sphereLow, pushTRS(pawPivot, toe * 0.018, -0.023, 0.042 - Math.abs(toe) * 0.008, 0, 0, 0, 0.011, 0.009, 0.012), furOpts(6, 0, 0.45));
+    }
+  }
+
+  // 4. Fluffy Articulated 6-Segment Ginger-Ringed Tail (with cream tip!)
+  let tailMat = pushTRS(root, 0, 0.065, -0.305, 0.35 + k.sitBlend * 0.2 - k.crouchBlend * 0.55 - k.napBlend * 0.4, 0, 0);
+  const segCount = 6;
+  for (let i = 0; i < segCount; i++) {
+    const frac = i / (segCount - 1);
+    const curlUp = (k.napBlend > 0.5) ? -0.18 : (0.24 - frac * 0.16 + k.stretchBlend * 0.15);
+    const swish = Math.sin(k.tailWag - i * 0.55) * (0.14 + frac * 0.16) + k.napBlend * 0.42;
+    tailMat = pushTRS(tailMat, 0, 0, i === 0 ? -0.03 : -0.088, curlUp, swish, 0);
+    const taper = lerp(1.0, 0.66, frac);
+    const segDraw = pushTRS(tailMat, 0, 0, -0.04, 0, 0, 0, taper, taper, 1.0);
+    queueMesh(meshes.kittenTailSeg, segDraw, furOpts(3, frac));
+  }
+}
+
+// ============================================================================
+// 12. BUILD SUNLIT MORNING KITCHEN SCENE INTO DRAW QUEUE
+// ============================================================================
+function buildSceneDrawList() {
+  drawListOpaque.length = 0;
+  drawListTrans.length = 0;
+
+  // 1. Warm Honey-Oak Kitchen Floor (receives real shadow map + morning window sunlight!)
+  queueMesh(meshes.plane, pushTRS(null, 0, 0, 0, 0, 0, 0, 10.5, 1, 9.5), {
+    tex: textures.woodFloor,
+    color: [0.96, 0.90, 0.82, 1],
+    rough: 0.48,
+    texScale: [3.2, 2.8],
+    matType: 5,
+    castShadow: false
+  });
+
+  // 2. Woven Pastel Cotton Kitchen Mat (where the kitten dines & naps!)
+  queueMesh(meshes.box, pushTRS(null, 0.0, 0.007, 0.24, 0, 0, 0, 3.25, 0.016, 2.15), {
+    tex: textures.wovenMat,
+    color: [0.98, 0.96, 0.93, 1],
+    rough: 0.92,
+    matType: 5,
+    castShadow: false
+  });
+
+  // 3. Kitchen Architecture: Back Cabinets, Countertop, Subway Tile Backsplash, Left Sunlit Window
+  // Lower cream-sage cabinets along back wall
+  queueMesh(meshes.box, pushTRS(null, 0.0, 0.84, -2.35, 0, 0, 0, 8.2, 1.68, 0.82), {
+    color: [0.89, 0.86, 0.80, 1], rough: 0.58, castShadow: false
+  });
+  // Recessed cabinet door panels + warm brass knobs
+  for (let i = -2; i <= 2; i++) {
+    const cx = i * 1.18;
+    queueMesh(meshes.box, pushTRS(null, cx, 0.88, -1.93, 0, 0, 0, 1.02, 1.24, 0.03), {
+      color: [0.93, 0.90, 0.85, 1], rough: 0.52, castShadow: false
+    });
+    queueMesh(meshes.sphereLow, pushTRS(null, cx + (i < 0 ? 0.36 : -0.36), 1.28, -1.89, 0, 0, 0, 0.042, 0.042, 0.042), {
+      color: [0.90, 0.72, 0.36, 1], rough: 0.22, metal: 0.88, castShadow: false
+    });
+  }
+  // Baseboard kickplate
+  queueMesh(meshes.box, pushTRS(null, 0, 0.09, -1.96, 0, 0, 0, 8.4, 0.18, 0.12), {
+    color: [0.76, 0.69, 0.60, 1], rough: 0.65, castShadow: false
+  });
+  // Warm butcher-block oak countertop
+  queueMesh(meshes.box, pushTRS(null, 0, 1.72, -2.28, 0, 0, 0, 8.4, 0.09, 1.02), {
+    tex: textures.beechWood, color: [0.95, 0.85, 0.70, 1], rough: 0.42, texScale: [3.5, 1], castShadow: false
+  });
+  // Glazed cream subway tile backsplash
+  queueMesh(meshes.box, pushTRS(null, 0, 2.95, -2.68, 0, 0, 0, 8.8, 2.5, 0.12), {
+    tex: textures.tiles, color: [0.98, 0.96, 0.93, 1], rough: 0.28, texScale: [4.2, 2.0], castShadow: false
+  });
+
+  // Cozy Kitchen Props on the Sunlit Counter (depth & storybook charm!)
+  // Butter-yellow enamel morning tea kettle
+  queueMesh(meshes.kettle, pushTRS(null, -0.88, 1.765, -1.98), {
+    color: [0.95, 0.80, 0.38, 1], rough: 0.22, metal: 0.12
+  });
+  // Terracotta herb pot with lush rosemary/mint tufts
+  queueMesh(meshes.herbPot, pushTRS(null, 0.95, 1.765, -2.02), {
+    color: [0.80, 0.46, 0.30, 1], rough: 0.78
+  });
+  for (let h = 0; h < 7; h++) {
+    const a = (h / 7) * 6.28;
+    const rad = h === 0 ? 0 : 0.08;
+    queueMesh(meshes.sphereLow, pushTRS(null, 0.95 + Math.cos(a) * rad, 2.11 + (h % 2) * 0.05, -2.02 + Math.sin(a) * rad, 0, 0, 0, 0.085, 0.095, 0.085), {
+      color: [0.34, 0.56, 0.30, 1], rough: 0.75, sss: 0.35
+    });
+  }
+  // Ceramic morning coffee/milk mug on counter
+  queueMesh(meshes.cyl, pushTRS(null, 0.22, 1.88, -1.96, 0, 0, 0, 0.095, 0.22, 0.095), {
+    tex: textures.ceramic, color: [0.95, 0.88, 0.84, 1], rough: 0.22
+  });
+
+  // Left Wall & Sunlit Morning Window Frame
+  queueMesh(meshes.box, pushTRS(null, -3.25, 1.8, -0.2, 0, 0, 0, 0.16, 4.2, 6.2), {
+    color: [0.96, 0.93, 0.87, 1], rough: 0.78, castShadow: false
+  });
+  // Bright glowing morning window pane (warm golden sky glow)
+  queueMesh(meshes.box, pushTRS(null, -3.14, 2.15, -0.2, 0, 0, 0, 0.04, 2.2, 2.3), {
+    color: [1.35, 1.24, 0.98, 1], matType: 6, extra: [0, 0, 0, 0], castShadow: false
+  });
+  // White wooden window mullions
+  queueMesh(meshes.box, pushTRS(null, -3.09, 2.15, -0.2, 0, 0, 0, 0.06, 2.25, 0.07), { color: [0.98, 0.97, 0.94, 1], rough: 0.5, castShadow: false });
+  queueMesh(meshes.box, pushTRS(null, -3.09, 2.15, -0.2, 0, 0, 0, 0.06, 0.07, 2.35), { color: [0.98, 0.97, 0.94, 1], rough: 0.5, castShadow: false });
+  // Fluttering sheer cream morning curtain panel (transparent)
+  queueMesh(meshes.quadV, pushTRS(null, -2.75 + world.curtainSway * 0.4, 2.0, -1.08, 0, 1.22 + world.curtainSway, 0, 1.15, 2.55, 1), {
+    color: [1.0, 0.98, 0.93, 0.48], rough: 0.95, transparent: true, castShadow: false, noDepthWrite: true
+  });
+
+  // 4. Hanging Crystal Sun-Catcher Prism (Top-left interactive gem!)
+  const pSwing = world.prism.swing;
+  // Thin gold thread
+  queueMesh(meshes.cyl, pushTRS(null, PRISM_POS[0], PRISM_POS[1] + 0.55, PRISM_POS[2], 0, 0, 0, 0.005, 1.05, 0.005), {
+    color: [0.95, 0.84, 0.50, 1], rough: 0.2, metal: 0.8, castShadow: false
+  });
+  // Faceted crystal prism catching morning sunlight
+  const prismMat = pushTRS(null, PRISM_POS[0] + Math.sin(pSwing) * 0.06, PRISM_POS[1], PRISM_POS[2], 0, world.time * 0.65, pSwing * 0.6);
+  queueMesh(meshes.prism, prismMat, {
+    matType: 3, transparent: true, castShadow: false
+  });
+  // Soft diamond glint on prism
+  const glintPulse = 0.55 + 0.45 * Math.sin(world.time * 3.4);
+  queueMesh(meshes.quadV, pushTRS(null, PRISM_POS[0] + Math.sin(pSwing) * 0.06, PRISM_POS[1] + 0.02, PRISM_POS[2] + 0.08, 0, 0, 0, 0.24 * glintPulse, 0.24 * glintPulse, 1), {
+    matType: 6, extra: [1, 0, 0, 0], color: [1.0, 0.96, 0.82, 0.62], transparent: true, additive: true, noDepthWrite: true, castShadow: false
+  });
+
+  // 5. Handcrafted Beechwood Rolling Kibble Ramp ("ころころスロープ")
+  queueMesh(meshes.ramp, M4.create(), {
+    tex: textures.beechWood,
+    color: [0.97, 0.90, 0.78, 1],
+    rough: 0.42
+  });
+  // Sturdy little wooden legs + inviting wooden start-tray at top of ramp
+  const pStart = evalRampPoint(0.0);
+  const pTop = evalRampPoint(0.06);
+  const pMid = evalRampPoint(0.42);
+  queueMesh(meshes.scoopCup, pushTRS(null, pStart[0] - 0.04, pStart[1] - 0.02, pStart[2] - 0.02, 0.22, 0.55, 0, 1.25, 0.85, 1.25), {
+    tex: textures.beechWood, color: [0.98, 0.91, 0.78, 1], rough: 0.40
+  });
+  // Two inviting decorative kibble pellets peeking from the wooden ramp hopper!
+  queueMesh(meshes.kibble, pushTRS(null, pStart[0] - 0.05, pStart[1] + 0.035, pStart[2] - 0.01), {
+    tex: textures.kibble, color: [0.95, 0.70, 0.46, 1], rough: 0.42
+  });
+  queueMesh(meshes.kibble, pushTRS(null, pStart[0] + 0.01, pStart[1] + 0.025, pStart[2] - 0.04), {
+    tex: textures.kibble, color: [0.88, 0.64, 0.42, 1], rough: 0.42
+  });
+  queueMesh(meshes.cyl, pushTRS(null, pTop[0], pTop[1] * 0.48, pTop[2], 0, 0, 0, 0.042, pTop[1] * 0.96, 0.042), {
+    tex: textures.beechWood, color: [0.90, 0.80, 0.66, 1], rough: 0.48
+  });
+  queueMesh(meshes.cyl, pushTRS(null, pMid[0], pMid[1] * 0.48, pMid[2], 0, 0, 0, 0.036, pMid[1] * 0.96, 0.036), {
+    tex: textures.beechWood, color: [0.90, 0.80, 0.66, 1], rough: 0.48
+  });
+
+  // 6. Scalloped Pastel-Blush Ceramic Flower Food Bowl
+  queueMesh(meshes.foodBowl, pushTRS(null, BOWL_POS[0], 0.015, BOWL_POS[2]), {
+    tex: textures.ceramic,
+    color: [0.99, 0.88, 0.86, 1],
+    rough: 0.18
+  });
+
+  // 7. Pale Aqua Ceramic Water Bowl + Sparkling Rippling Water Surface!
+  queueMesh(meshes.waterBowl, pushTRS(null, WATER_POS[0], 0.015, WATER_POS[2]), {
+    tex: textures.ceramic,
+    color: [0.80, 0.93, 0.94, 1],
+    rough: 0.16
+  });
+  queueMesh(meshes.disk, pushTRS(null, WATER_POS[0], 0.102, WATER_POS[2], 0, 0, 0, 0.258, 1, 0.258), {
+    matType: 4,
+    transparent: true,
+    castShadow: false,
+    noDepthWrite: true
+  });
+
+  // 8. Glass Kibble Jar (Opaque round kibble pile inside + Cork Lid + Transparent Glass Shell!)
+  const jarWig = Math.sin(world.time * 24) * 0.025 * world.jarWiggle;
+  for (const jp of world.jarPellets) {
+    const pm = pushTRS(null, JAR_POS[0] + jp.x, jp.y, JAR_POS[2] + jp.z, 0, jp.ry, 0, 1.05, 1.05, 1.05);
+    queueMesh(meshes.kibble, pm, {
+      tex: textures.kibble,
+      color: [0.92 * jp.shade, 0.68 * jp.shade, 0.46 * jp.shade, 1],
+      rough: 0.48,
+      castShadow: false
+    });
+  }
+  // Cork Stopper Lid with Wooden Pull Knob
+  queueMesh(meshes.corkLid, pushTRS(null, world.lidPos[0], world.lidPos[1], world.lidPos[2], world.lidRot[0], world.lidRot[1], world.lidRot[2]), {
+    tex: textures.cork,
+    color: [0.95, 0.86, 0.74, 1],
+    rough: 0.84
+  });
+  // Transparent Glossy Glass Jar (rendered after opaque interior kibble!)
+  queueMesh(meshes.glassJar, pushTRS(null, JAR_POS[0], 0.015, JAR_POS[2], 0, 0, jarWig), {
+    matType: 3,
+    transparent: true,
+    castShadow: true,
+    noDepthWrite: true
+  });
+
+  // 9. Handcrafted Beechwood Kibble Scoop (with round kibble mound inside when scooping!)
+  const sc = world.scoop;
+  const scMat = pushTRS(null, sc.x, sc.y, sc.z, sc.tilt, sc.yaw, 0);
+  queueMesh(meshes.scoopCup, scMat, {
+    tex: textures.beechWood, color: [0.96, 0.88, 0.74, 1], rough: 0.42
+  });
+  queueMesh(meshes.cyl, pushTRS(scMat, 0, 0.06, 0.21, 1.48, 0, 0, 0.022, 0.24, 0.022), {
+    tex: textures.beechWood, color: [0.94, 0.84, 0.70, 1], rough: 0.44
+  });
+  // Visible round kibble sitting inside the scoop!
+  for (let i = 0; i < sc.pelletsInScoop; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const rad = i === 0 ? 0 : 0.052;
+    const km = pushTRS(scMat, Math.cos(a) * rad, 0.065 + (i % 2) * 0.028, Math.sin(a) * rad, i, i * 1.4, 0);
+    queueMesh(meshes.kibble, km, {
+      tex: textures.kibble, color: [0.92, 0.68, 0.46, 1], rough: 0.45
+    });
+  }
+
+  // 10. All Active Rolling Round Dry Food Kibble Pellets!
+  for (const p of world.kibbles) {
+    const km = pushTRS(null, p.x, p.y, p.z, p.rx, p.ry, p.rz);
+    queueMesh(meshes.kibble, km, {
+      tex: textures.kibble,
+      color: [0.95 * p.shade, 0.70 * p.shade, 0.46 * p.shade, 1],
+      rough: 0.42,
+      rim: 0.18,
+      rimColor: [1.0, 0.88, 0.65]
+    });
+  }
+
+  // 11. Cozy Dusty-Rose & Cream Yarn Toy Ball!
+  const bl = world.ball;
+  queueMesh(meshes.sphere, pushTRS(null, bl.x, bl.y, bl.z, bl.rx, 0, bl.rz, bl.r, bl.r, bl.r), {
+    tex: textures.yarn,
+    color: [0.98, 0.88, 0.86, 1],
+    rough: 0.90,
+    rim: 0.35,
+    rimColor: [1.0, 0.90, 0.82]
+  });
+
+  // 12. The Star: Ginger Tabby White-Socks Kitten!
+  buildKittenDrawList();
+
+  // 13. Dancing Iridescent Rainbow Prism Spot on the Kitchen Floor!
+  if (world.prism.spotActive > 0.01) {
+    const spM = pushTRS(null, world.prism.spotX, 0.024, world.prism.spotZ, 0, 0, 0, 0.42, 1, 0.42);
+    queueMesh(meshes.plane, spM, {
+      matType: 6,
+      extra: [3, 0, 0, 0],
+      color: [1, 1, 1, world.prism.spotActive * 0.72],
+      transparent: true,
+      additive: true,
+      noDepthWrite: true,
+      castShadow: false
+    });
+  }
+
+  // 14. Volumetric Golden Morning Sunbeam Shafts!
+  for (let i = 0; i < 3; i++) {
+    const sx = -1.65 + i * 0.68;
+    const sz = -0.55 + i * 0.42;
+    const beamMat = pushTRS(null, sx, 1.38, sz, 0, 0.25, -0.62, 0.85, 3.3, 1);
+    queueMesh(meshes.quadV, beamMat, {
+      matType: 6,
+      extra: [2, 0, 0, 0],
+      color: [1.0, 0.93, 0.74, 0.055 + world.warmth * 0.025],
+      transparent: true,
+      additive: true,
+      noDepthWrite: true,
+      castShadow: false
+    });
+  }
+
+  // 15. Drifting Golden Sunlit Dust Motes & Active Particles (Crumbs, Sparkles, Steam)!
+  const camYaw = Math.atan2(camera.pos[0], camera.pos[2]);
+  for (const dm of world.dustMotes) {
+    const mx = dm.x + Math.sin(world.time * dm.speed + dm.phase) * 0.18;
+    const my = dm.y + Math.cos(world.time * dm.speed * 0.8 + dm.phase) * 0.14;
+    const mz = dm.z + Math.sin(world.time * dm.speed * 0.6 + dm.phase * 1.5) * 0.14;
+    const pulse = 0.45 + 0.55 * Math.sin(world.time * 1.8 + dm.phase);
+    queueMesh(meshes.quadV, pushTRS(null, mx, my, mz, 0, camYaw, 0, dm.size, dm.size, 1), {
+      matType: 6,
+      extra: [1, 0, 0, 0],
+      color: [1.0, 0.94, 0.76, 0.34 * pulse],
+      transparent: true,
+      additive: true,
+      noDepthWrite: true,
+      castShadow: false
+    });
+  }
+
+  for (const pt of world.particles) {
+    const u = pt.age / pt.life;
+    if (pt.kind === 'crumb') {
+      const s = pt.size * (1.0 - u * 0.6);
+      queueMesh(meshes.sphereLow, pushTRS(null, pt.x, pt.y, pt.z, 0, 0, 0, s, s, s), {
+        color: [pt.color[0], pt.color[1], pt.color[2], 1], rough: 0.6, castShadow: false
+      });
+    } else if (pt.kind === 'steam') {
+      const s = pt.size * (0.6 + u * 1.6);
+      const alpha = Math.sin(u * Math.PI) * 0.15;
+      queueMesh(meshes.quadV, pushTRS(null, pt.x, pt.y, pt.z, 0, camYaw, 0, s, s, 1), {
+        matType: 6, extra: [1, 0, 0, 0], color: [1.0, 0.97, 0.92, alpha],
+        transparent: true, noDepthWrite: true, castShadow: false
+      });
+    } else {
+      const s = pt.size * Math.sin(u * Math.PI);
+      queueMesh(meshes.quadV, pushTRS(null, pt.x, pt.y, pt.z, 0, camYaw, 0, s, s, 1), {
+        matType: 6, extra: [1, 0, 0, 0], color: [pt.color[0], pt.color[1], pt.color[2], 0.78 * (1 - u)],
+        transparent: true, additive: true, noDepthWrite: true, castShadow: false
+      });
+    }
+  }
+}
+
+// ============================================================================
+// 13. WEBGL2 TWO-PASS RENDERER (Soft Shadow Map + PBR Morning Scene)
+// ============================================================================
+const lightView = M4.create();
+const lightProj = M4.create();
+const lightViewProj = M4.create();
+const sunDir = V3.norm(V3.create(), [-0.76, 0.62, -0.22]);
+
+function renderFrame() {
+  buildSceneDrawList();
+
+  // Gently rise the morning sun slightly as the morning warms up
+  V3.norm(sunDir, [-0.76, 0.58 + world.warmth * 0.10, -0.22]);
+  const lightEye = [sunDir[0] * 6.5, sunDir[1] * 6.5, sunDir[2] * 6.5];
+  M4.lookAt(lightView, lightEye, [0, 0.25, 0.25], [0, 1, 0]);
+  M4.ortho(lightProj, -3.4, 3.4, -2.6, 2.8, 1.0, 15.0);
+  M4.mul(lightViewProj, lightProj, lightView);
+
+  // --- PASS 1: Directional Shadow Map ---
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(2.2, 4.0);
+  gl.useProgram(shadowProg);
+
+  for (const item of drawListOpaque) {
+    if (!item.castShadow) continue;
+    M4.mul(scratchLightMVP, lightViewProj, item.model);
+    gl.uniformMatrix4fv(shLoc.uLightMVP, false, scratchLightMVP);
+    gl.bindVertexArray(item.mesh.vao);
+    gl.drawElements(gl.TRIANGLES, item.mesh.count, gl.UNSIGNED_SHORT, 0);
+  }
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+
+  // --- PASS 2: Main Perspective PBR Pass ---
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.95, 0.87, 0.75, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  gl.useProgram(mainProg);
+  gl.uniformMatrix4fv(mLoc.uViewProj, false, camera.viewProj);
+  gl.uniformMatrix4fv(mLoc.uLightViewProj, false, lightViewProj);
+  gl.uniform3fv(mLoc.uCamPos, camera.pos);
+  gl.uniform3fv(mLoc.uSunDir, sunDir);
+  gl.uniform3f(mLoc.uSunColor, 1.0, 0.89 + world.warmth * 0.05, 0.72 + world.warmth * 0.08);
+  gl.uniform3f(mLoc.uSkyColor, 0.76, 0.84, 0.94);
+  gl.uniform3f(mLoc.uGroundColor, 0.54, 0.40, 0.28);
+  gl.uniform1f(mLoc.uTime, world.time);
+  gl.uniform1f(mLoc.uWarmth, world.warmth);
+
+  // Pack 4 water ripples
+  const ripFlat = new Float32Array(16);
+  for (let i = 0; i < 4; i++) {
+    ripFlat[i * 4] = world.ripples[i][0];
+    ripFlat[i * 4 + 1] = world.ripples[i][1];
+    ripFlat[i * 4 + 2] = world.ripples[i][2];
+    ripFlat[i * 4 + 3] = world.ripples[i][3];
+  }
+  gl.uniform4fv(mLoc.uRipples0, ripFlat);
+  gl.uniform4f(mLoc.uPrismSpot, world.prism.spotX, world.prism.spotZ, world.prism.spotActive, world.time);
+
+  // Bind Shadow Map to unit 1
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.uniform1i(mLoc.uShadowMap, 1);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(mLoc.uTex, 0);
+
+  const drawItem = (item) => {
+    M4.normalMat3(scratchNorm, item.model);
+    gl.uniformMatrix4fv(mLoc.uModel, false, item.model);
+    gl.uniformMatrix3fv(mLoc.uNormalMat, false, scratchNorm);
+    gl.uniform4fv(mLoc.uBaseColor, item.color);
+    gl.uniform1f(mLoc.uRoughness, item.rough);
+    gl.uniform1f(mLoc.uMetallic, item.metal);
+    gl.uniform1f(mLoc.uRimStrength, item.rim);
+    gl.uniform3fv(mLoc.uRimColor, item.rimColor);
+    gl.uniform1f(mLoc.uSubsurface, item.sss);
+    gl.uniform2fv(mLoc.uTexScale, item.texScale);
+    gl.uniform1i(mLoc.uMatType, item.matType);
+    gl.uniform4fv(mLoc.uExtra, item.extra);
+
+    gl.bindTexture(gl.TEXTURE_2D, item.tex);
+    gl.bindVertexArray(item.mesh.vao);
+    gl.drawElements(gl.TRIANGLES, item.mesh.count, gl.UNSIGNED_SHORT, 0);
+  };
+
+  // Opaque Meshes
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  for (const item of drawListOpaque) {
+    drawItem(item);
+  }
+
+  // Transparent & Additive Meshes (Glass Jar, Rippling Water, Curtain, Sunbeams, Prism, Dust!)
+  gl.enable(gl.BLEND);
+  for (const item of drawListTrans) {
+    gl.depthMask(!item.noDepthWrite);
+    if (item.additive) gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    drawItem(item);
+  }
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+// ============================================================================
+// 14. RESIZE & MAIN LOOP
+// ============================================================================
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+  const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+let prevTime = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - prevTime) * 0.001));
+  prevTime = now;
+  resize();
+  updateWorld(dt);
+  updateCamera(dt);
+  sound.update(dt, world.time);
+  renderFrame();
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
