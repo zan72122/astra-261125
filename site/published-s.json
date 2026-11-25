@@ -6,6 +6,7 @@
   "s-28a-v1",
   "s-29a-gem-v1",
   "s-29a-v1",
+  "s-30a-gem-v1",
   "s-30a-v1",
   "s-31a-v1",
   "s-32a-v1",
@@ -18,6 +19,10 @@
   },
   "s-29a-gem-v1": {
    "file": "thumbs/s-29a-gem-v1.jpg",
+   "kind": "real"
+  },
+  "s-30a-gem-v1": {
+   "file": "thumbs/s-30a-gem-v1.jpg",
    "kind": "real"
   },
   "s-26a-v1": {
