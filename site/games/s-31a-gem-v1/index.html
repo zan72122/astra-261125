@@ -1,0 +1,3918 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta name="robots" content="noindex,nofollow">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>わんこのぺろぺろ</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #2b231d;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas.grabbing {
+    cursor: grabbing;
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<script>
+(() => {
+'use strict';
+
+// ============================================================================
+// 1. MATH UTILITIES
+// ============================================================================
+const V3 = {
+  create: (x = 0, y = 0, z = 0) => new Float32Array([x, y, z]),
+  set: (o, x, y, z) => { o[0] = x; o[1] = y; o[2] = z; return o; },
+  copy: (o, a) => { o[0] = a[0]; o[1] = a[1]; o[2] = a[2]; return o; },
+  add: (o, a, b) => { o[0] = a[0] + b[0]; o[1] = a[1] + b[1]; o[2] = a[2] + b[2]; return o; },
+  sub: (o, a, b) => { o[0] = a[0] - b[0]; o[1] = a[1] - b[1]; o[2] = a[2] - b[2]; return o; },
+  scale: (o, a, s) => { o[0] = a[0] * s; o[1] = a[1] * s; o[2] = a[2] * s; return o; },
+  lerp: (o, a, b, t) => {
+    o[0] = a[0] + (b[0] - a[0]) * t;
+    o[1] = a[1] + (b[1] - a[1]) * t;
+    o[2] = a[2] + (b[2] - a[2]) * t;
+    return o;
+  },
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (o, a, b) => {
+    const ax = a[0], ay = a[1], az = a[2], bx = b[0], by = b[1], bz = b[2];
+    o[0] = ay * bz - az * by;
+    o[1] = az * bx - ax * bz;
+    o[2] = ax * by - ay * bx;
+    return o;
+  },
+  len: (a) => Math.hypot(a[0], a[1], a[2]),
+  dist: (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]),
+  norm: (o, a) => {
+    const l = Math.hypot(a[0], a[1], a[2]) || 1;
+    o[0] = a[0] / l; o[1] = a[1] / l; o[2] = a[2] / l;
+    return o;
+  },
+  transformMat4: (o, a, m) => {
+    const x = a[0], y = a[1], z = a[2];
+    const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
+    o[0] = (m[0] * x + m[4] * y + m[8] * z + m[12]) / w;
+    o[1] = (m[1] * x + m[5] * y + m[9] * z + m[13]) / w;
+    o[2] = (m[2] * x + m[6] * y + m[10] * z + m[14]) / w;
+    return o;
+  }
+};
+
+const M4 = {
+  create: () => {
+    const m = new Float32Array(16);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  ident: (m) => {
+    m.fill(0);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  copy: (o, a) => { o.set(a); return o; },
+  mul: (o, a, b) => {
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3],
+          a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7],
+          a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11],
+          a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+    let b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+    o[0] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+    o[1] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+    o[2] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+    o[3] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+    b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+    o[4] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+    o[5] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+    o[6] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+    o[7] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+    b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+    o[8] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+    o[9] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+    o[10] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+    o[11] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+    b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+    o[12] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30;
+    o[13] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31;
+    o[14] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32;
+    o[15] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33;
+    return o;
+  },
+  translate: (o, a, x, y, z) => {
+    if (o !== a) o.set(a);
+    o[12] = a[0] * x + a[4] * y + a[8] * z + a[12];
+    o[13] = a[1] * x + a[5] * y + a[9] * z + a[13];
+    o[14] = a[2] * x + a[6] * y + a[10] * z + a[14];
+    o[15] = a[3] * x + a[7] * y + a[11] * z + a[15];
+    return o;
+  },
+  scale: (o, a, x, y, z) => {
+    o[0] = a[0] * x; o[1] = a[1] * x; o[2] = a[2] * x; o[3] = a[3] * x;
+    o[4] = a[4] * y; o[5] = a[5] * y; o[6] = a[6] * y; o[7] = a[7] * y;
+    o[8] = a[8] * z; o[9] = a[9] * z; o[10] = a[10] * z; o[11] = a[11] * z;
+    if (o !== a) { o[12] = a[12]; o[13] = a[13]; o[14] = a[14]; o[15] = a[15]; }
+    return o;
+  },
+  rotateX: (o, a, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7],
+          a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+    if (o !== a) {
+      o[0] = a[0]; o[1] = a[1]; o[2] = a[2]; o[3] = a[3];
+      o[12] = a[12]; o[13] = a[13]; o[14] = a[14]; o[15] = a[15];
+    }
+    o[4] = a10 * c + a20 * s; o[5] = a11 * c + a21 * s; o[6] = a12 * c + a22 * s; o[7] = a13 * c + a23 * s;
+    o[8] = a20 * c - a10 * s; o[9] = a21 * c - a11 * s; o[10] = a22 * c - a12 * s; o[11] = a23 * c - a13 * s;
+    return o;
+  },
+  rotateY: (o, a, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3],
+          a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+    if (o !== a) {
+      o[4] = a[4]; o[5] = a[5]; o[6] = a[6]; o[7] = a[7];
+      o[12] = a[12]; o[13] = a[13]; o[14] = a[14]; o[15] = a[15];
+    }
+    o[0] = a00 * c - a20 * s; o[1] = a01 * c - a21 * s; o[2] = a02 * c - a22 * s; o[3] = a03 * c - a23 * s;
+    o[8] = a00 * s + a20 * c; o[9] = a01 * s + a21 * c; o[10] = a02 * s + a22 * c; o[11] = a03 * s + a23 * c;
+    return o;
+  },
+  rotateZ: (o, a, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3],
+          a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+    if (o !== a) {
+      o[8] = a[8]; o[9] = a[9]; o[10] = a[10]; o[11] = a[11];
+      o[12] = a[12]; o[13] = a[13]; o[14] = a[14]; o[15] = a[15];
+    }
+    o[0] = a00 * c + a10 * s; o[1] = a01 * c + a11 * s; o[2] = a02 * c + a12 * s; o[3] = a03 * c + a13 * s;
+    o[4] = a10 * c - a00 * s; o[5] = a11 * c - a01 * s; o[6] = a12 * c - a02 * s; o[7] = a13 * c - a03 * s;
+    return o;
+  },
+  perspective: (o, fovy, aspect, near, far) => {
+    const f = 1.0 / Math.tan(fovy * 0.5);
+    const nf = 1 / (near - far);
+    o.fill(0);
+    o[0] = f / aspect;
+    o[5] = f;
+    o[10] = (far + near) * nf;
+    o[11] = -1;
+    o[14] = 2 * far * near * nf;
+    return o;
+  },
+  ortho: (o, l, r, b, t, n, f) => {
+    const lr = 1 / (l - r), bt = 1 / (b - t), nf = 1 / (n - f);
+    o.fill(0);
+    o[0] = -2 * lr; o[5] = -2 * bt; o[10] = 2 * nf;
+    o[12] = (l + r) * lr; o[13] = (t + b) * bt; o[14] = (f + n) * nf;
+    o[15] = 1;
+    return o;
+  },
+  lookAt: (o, eye, center, up) => {
+    let zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
+    let zl = Math.hypot(zx, zy, zz) || 1;
+    zx /= zl; zy /= zl; zz /= zl;
+    let xx = up[1] * zz - up[2] * zy;
+    let xy = up[2] * zx - up[0] * zz;
+    let xz = up[0] * zy - up[1] * zx;
+    let xl = Math.hypot(xx, xy, xz) || 1;
+    xx /= xl; xy /= xl; xz /= xl;
+    const yx = zy * xz - zz * xy;
+    const yy = zz * xx - zx * xz;
+    const yz = zx * xy - zy * xx;
+    o[0] = xx; o[1] = yx; o[2] = zx; o[3] = 0;
+    o[4] = xy; o[5] = yy; o[6] = zy; o[7] = 0;
+    o[8] = xz; o[9] = yz; o[10] = zz; o[11] = 0;
+    o[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+    o[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+    o[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+    o[15] = 1;
+    return o;
+  },
+  invert: (o, a) => {
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3],
+          a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7],
+          a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11],
+          a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+    const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10,
+          b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11,
+          b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12,
+          b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30,
+          b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31,
+          b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    if (!det) return null;
+    det = 1.0 / det;
+    o[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+    o[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+    o[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+    o[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+    o[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+    o[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+    o[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+    o[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+    o[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+    o[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+    o[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+    o[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+    o[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+    o[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+    o[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+    o[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+    return o;
+  }
+};
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (a, b, x) => {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt));
+const angleDiff = (a, b) => {
+  let d = (b - a + Math.PI) % (Math.PI * 2) - Math.PI;
+  return d < -Math.PI ? d + Math.PI * 2 : d;
+};
+
+// ============================================================================
+// 2. PROCEDURAL WEB AUDIO ENGINE (Gentle, Warm, Lifelike)
+// ============================================================================
+class SoundEngine {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.noiseBuf = null;
+    this.ready = false;
+    this.ambientTimer = 0;
+  }
+
+  unlock() {
+    if (this.ready) {
+      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+      return;
+    }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.65;
+      this.master.connect(this.ctx.destination);
+
+      // Create reusable soft pink-ish noise buffer
+      const sr = this.ctx.sampleRate;
+      const len = sr * 2;
+      this.noiseBuf = this.ctx.createBuffer(1, len, sr);
+      const data = this.noiseBuf.getChannelData(0);
+      let b0 = 0, b1 = 0, b2 = 0;
+      for (let i = 0; i < len; i++) {
+        const w = Math.random() * 2 - 1;
+        b0 = 0.997 * b0 + w * 0.029;
+        b1 = 0.985 * b1 + w * 0.032;
+        b2 = 0.950 * b2 + w * 0.048;
+        data[i] = (b0 + b1 + b2 + w * 0.12) * 1.4;
+      }
+      this.ready = true;
+    } catch (_) {}
+  }
+
+  now() { return this.ctx ? this.ctx.currentTime : 0; }
+
+  // Soft wet puppy lick ("pero-pero")
+  playLick(intensity = 1.0) {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+
+    // Wet noise flick
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    const baseF = 1100 + Math.random() * 450;
+    bp.frequency.setValueAtTime(baseF * 0.65, t);
+    bp.frequency.exponentialRampToValueAtTime(baseF * 1.45, t + 0.055);
+    bp.frequency.exponentialRampToValueAtTime(baseF * 0.8, t + 0.11);
+    bp.Q.value = 3.2;
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.16 * intensity, t + 0.022);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.115);
+
+    src.connect(bp); bp.connect(g); g.connect(this.master);
+    src.start(t, Math.random() * 1.2, 0.13);
+
+    // Subtle liquid smack pop
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    const f0 = 320 + Math.random() * 90;
+    osc.frequency.setValueAtTime(f0, t + 0.015);
+    osc.frequency.exponentialRampToValueAtTime(f0 * 2.1, t + 0.065);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.001, t + 0.015);
+    og.gain.linearRampToValueAtTime(0.065 * intensity, t + 0.032);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.075);
+    osc.connect(og); og.connect(this.master);
+    osc.start(t + 0.015);
+    osc.stop(t + 0.085);
+  }
+
+  // Water lapping with liquid droplets
+  playWaterLap() {
+    if (!this.ready) return;
+    this.playLick(0.7);
+    const t = this.now() + 0.03;
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    const f = 680 + Math.random() * 340;
+    osc.frequency.setValueAtTime(f * 0.72, t);
+    osc.frequency.exponentialRampToValueAtTime(f * 1.5, t + 0.065);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.08, t + 0.014);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.085);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.09);
+  }
+
+  // Water dish tap ripple plink
+  playWaterPlink() {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    const f = 540 + Math.random() * 260;
+    osc.frequency.setValueAtTime(f, t);
+    osc.frequency.exponentialRampToValueAtTime(f * 1.75, t + 0.09);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.11, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.15);
+  }
+
+  // Cute puppy sniff-sniff
+  playSniff() {
+    if (!this.ready) return;
+    const ctx = this.ctx;
+    for (let i = 0; i < 2; i++) {
+      const t = this.now() + i * 0.11;
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuf;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'bandpass';
+      hp.frequency.value = 1750 + Math.random() * 300;
+      hp.Q.value = 2.0;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.08, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+      src.connect(hp); hp.connect(g); g.connect(this.master);
+      src.start(t, Math.random(), 0.08);
+    }
+  }
+
+  // Sweet tiny puppy happy yip ("wan!")
+  playYip() {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    const base = 520 + Math.random() * 70;
+    osc.frequency.setValueAtTime(base * 0.85, t);
+    osc.frequency.exponentialRampToValueAtTime(base * 1.48, t + 0.045);
+    osc.frequency.exponentialRampToValueAtTime(base * 0.72, t + 0.13);
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1600, t);
+    lp.frequency.exponentialRampToValueAtTime(750, t + 0.13);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.14, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.145);
+
+    osc.connect(lp); lp.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.16);
+  }
+
+  // Blissful soft puppy sigh / warm hum
+  playSigh() {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(280 + Math.random() * 30, t);
+    osc.frequency.exponentialRampToValueAtTime(185, t + 0.34);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.055, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.36);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.38);
+
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 650; bp.Q.value = 1.5;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.001, t);
+    ng.gain.linearRampToValueAtTime(0.035, t + 0.1);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    src.connect(bp); bp.connect(ng); ng.connect(this.master);
+    src.start(t, Math.random(), 0.36);
+  }
+
+  // Pouch peel / pop open
+  playPouchOpen() {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+    // Soft crinkle
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'bandpass'; hp.frequency.value = 2800; hp.Q.value = 1.6;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.001, t);
+    ng.gain.linearRampToValueAtTime(0.11, t + 0.03);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    src.connect(hp); hp.connect(ng); ng.connect(this.master);
+    src.start(t, Math.random(), 0.16);
+
+    // Friendly pop
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(260, t + 0.05);
+    osc.frequency.exponentialRampToValueAtTime(620, t + 0.12);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.001, t + 0.05);
+    og.gain.linearRampToValueAtTime(0.13, t + 0.068);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    osc.connect(og); og.connect(this.master);
+    osc.start(t + 0.05); osc.stop(t + 0.16);
+  }
+
+  // Creamy paste squeeze
+  playSqueeze() {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    const f = 190 + Math.random() * 65;
+    osc.frequency.setValueAtTime(f, t);
+    osc.frequency.exponentialRampToValueAtTime(f * 1.45, t + 0.07);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.075, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.1);
+  }
+
+  // Ceramic spoon clink (gentle pentatonic)
+  playCeramicClink() {
+    if (!this.ready) return;
+    const notes = [523.25, 587.33, 659.25, 783.99, 880.0];
+    const f = notes[Math.floor(Math.random() * notes.length)] * 1.5;
+    const t = this.now();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(f, t);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.085, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.24);
+  }
+
+  // Soft cloth wipe swish
+  playWipe() {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1050; bp.Q.value = 1.2;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.065, t + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
+    src.connect(bp); bp.connect(g); g.connect(this.master);
+    src.start(t, Math.random(), 0.18);
+  }
+
+  // Plush ball soft bounce / squeak
+  playBallBounce(squeak = false) {
+    if (!this.ready) return;
+    const t = this.now();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    if (squeak) {
+      osc.frequency.setValueAtTime(840, t);
+      osc.frequency.exponentialRampToValueAtTime(1260, t + 0.05);
+      osc.frequency.exponentialRampToValueAtTime(760, t + 0.12);
+    } else {
+      osc.frequency.setValueAtTime(175, t);
+      osc.frequency.exponentialRampToValueAtTime(85, t + 0.09);
+    }
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(squeak ? 0.08 : 0.11, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.001, t + (squeak ? 0.13 : 0.1));
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + 0.15);
+  }
+
+  // Sunbeam / rainbow / celebration kalimba chime
+  playChime(chordIndex = 0) {
+    if (!this.ready) return;
+    const scale = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5];
+    const ctx = this.ctx;
+    const count = chordIndex >= 0 ? 3 : 1;
+    for (let i = 0; i < count; i++) {
+      const idx = chordIndex >= 0 ? (chordIndex + i * 2) % scale.length : Math.floor(Math.random() * scale.length);
+      const t = this.now() + i * 0.09;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(scale[idx], t);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.065, t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.72);
+      osc.connect(g); g.connect(this.master);
+      osc.start(t); osc.stop(t + 0.75);
+    }
+  }
+
+  // Distant gentle post-rain songbird or raindrop drip
+  updateAmbient(dt) {
+    if (!this.ready) return;
+    this.ambientTimer -= dt;
+    if (this.ambientTimer > 0) return;
+    this.ambientTimer = 3.2 + Math.random() * 5.0;
+    const ctx = this.ctx;
+    const t = this.now();
+    if (Math.random() < 0.45) {
+      // Soft outdoor raindrop drip
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      const f = 920 + Math.random() * 480;
+      osc.frequency.setValueAtTime(f * 0.75, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 1.45, t + 0.055);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.028, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.075);
+      osc.connect(g); g.connect(this.master);
+      osc.start(t); osc.stop(t + 0.08);
+    } else {
+      // Soft distant post-rain songbird double chirp
+      for (let i = 0; i < 2; i++) {
+        const st = t + i * 0.16;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        const f = 2200 + Math.random() * 550;
+        osc.frequency.setValueAtTime(f, st);
+        osc.frequency.exponentialRampToValueAtTime(f * (i === 0 ? 1.24 : 0.88), st + 0.11);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.001, st);
+        g.gain.linearRampToValueAtTime(0.022, st + 0.025);
+        g.gain.exponentialRampToValueAtTime(0.001, st + 0.12);
+        osc.connect(g); g.connect(this.master);
+        osc.start(st); osc.stop(st + 0.13);
+      }
+    }
+  }
+}
+
+const audio = new SoundEngine();
+
+// ============================================================================
+// 3. WEBGL2 CONTEXT & SHADERS
+// ============================================================================
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', {
+  antialias: true,
+  alpha: false,
+  powerPreference: 'high-performance',
+  preserveDrawingBuffer: false
+});
+
+if (!gl) {
+  document.body.style.background = '#e8d9c5';
+  throw new Error('WebGL2 not supported');
+}
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s), src);
+    throw new Error('Shader compile failed');
+  }
+  return s;
+}
+
+function createProgram(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+    throw new Error('Program link failed');
+  }
+  const u = {};
+  const count = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < count; i++) {
+    const info = gl.getActiveUniform(p, i);
+    const name = info.name.replace(/\[0\]$/, '');
+    u[name] = gl.getUniformLocation(p, name);
+  }
+  return { prog: p, u };
+}
+
+// --- Shadow Map Shader ---
+const SHADOW_VS = `#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uLightVP;
+uniform mat4 uModel;
+void main() {
+  gl_Position = uLightVP * uModel * vec4(aPos, 1.0);
+}`;
+
+const SHADOW_FS = `#version 300 es
+precision highp float;
+void main() {}`;
+
+// --- Main Photorealistic PBR Shader ---
+const MAIN_VS = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNorm;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec4 aColor;
+
+uniform mat4 uVP;
+uniform mat4 uModel;
+uniform mat4 uLightVP;
+uniform float uTime;
+uniform float uWaveAmp;
+
+out vec3 vWorldPos;
+out vec3 vWorldNorm;
+out vec3 vLocalPos;
+out vec2 vUV;
+out vec4 vColor;
+out vec4 vLightSpacePos;
+
+void main() {
+  vec3 pos = aPos;
+  if (uWaveAmp > 0.0001) {
+    float sway = sin(uTime * 1.45 + pos.y * 2.6 + pos.x * 3.1) * uWaveAmp * smoothstep(0.95, -0.5, pos.y);
+    pos.z += sway;
+    pos.x += sway * 0.32;
+  }
+  vec4 wp = uModel * vec4(pos, 1.0);
+  vWorldPos = wp.xyz;
+  mat3 nMat = mat3(uModel);
+  vWorldNorm = normalize(nMat * aNorm);
+  vLocalPos = aPos;
+  vUV = aUV;
+  vColor = aColor;
+  vLightSpacePos = uLightVP * wp;
+  gl_Position = uVP * wp;
+}`;
+
+const MAIN_FS = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+
+in vec3 vWorldPos;
+in vec3 vWorldNorm;
+in vec3 vLocalPos;
+in vec2 vUV;
+in vec4 vColor;
+in vec4 vLightSpacePos;
+
+uniform sampler2D uTex;
+uniform sampler2D uShadowMap;
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uSkyColor;
+uniform vec3 uBounceColor;
+uniform vec4 uBaseColor;
+uniform vec4 uPBR;       // x: roughness, y: metallic, z: sheen, w: uvScale
+uniform int uMatMode;    // 0:std PBR, 1:dog fur, 2:dog eye, 3:wet gloss/paste, 4:water, 5:window glass, 6:floor w/ sunbeam+rainbow
+uniform int uFurPart;    // 1:head, 2:torso, 3:ear, 4:tail, 5:leg/paw, 6:white fluff
+uniform float uTime;
+uniform float uRainbowStrength;
+uniform float uRainSlide;
+uniform vec4 uRipples[4]; // xyz: local x,z,startTime, w: strength
+uniform vec4 uHighlight;  // xyz: glow tint, w: amount
+
+out vec4 fragColor;
+
+const float PI = 3.14159265;
+
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+float noise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 3; i++) {
+    v += a * noise2(p);
+    p *= 2.07;
+    a *= 0.5;
+  }
+  return v;
+}
+
+float calcShadow(vec4 lsPos, vec3 N, vec3 L) {
+  vec3 proj = lsPos.xyz / lsPos.w;
+  proj = proj * 0.5 + 0.5;
+  if (proj.z > 0.999 || proj.x < 0.01 || proj.x > 0.99 || proj.y < 0.01 || proj.y > 0.99) return 1.0;
+  float ndotl = max(dot(N, L), 0.0);
+  float bias = max(0.0022 * (1.0 - ndotl), 0.0008);
+  vec2 texel = vec2(1.0 / 2048.0);
+  float sum = 0.0;
+  const vec2 offs[9] = vec2[9](
+    vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0),
+    vec2(-1.0,  0.0), vec2(0.0,  0.0), vec2(1.0,  0.0),
+    vec2(-1.0,  1.0), vec2(0.0,  1.0), vec2(1.0,  1.0)
+  );
+  for (int i = 0; i < 9; i++) {
+    float d = texture(uShadowMap, proj.xy + offs[i] * texel * 1.65).r;
+    sum += (proj.z - bias > d) ? 0.0 : 1.0;
+  }
+  return sum / 9.0;
+}
+
+// Blenheim Cavalier King Charles Spaniel procedural fur coloration
+vec3 blenheimFurColor(vec3 lp, vec2 uv, int part, out float furRough) {
+  vec3 pearlWhite = vec3(0.95, 0.92, 0.87);
+  vec3 warmCream  = vec3(0.90, 0.84, 0.75);
+  vec3 chestnut   = vec3(0.56, 0.24, 0.095);
+  vec3 richAmber  = vec3(0.68, 0.33, 0.14);
+  vec3 deepMahog  = vec3(0.38, 0.15, 0.06);
+
+  float strands = fbm(uv * vec2(34.0, 14.0) + lp.xy * 12.0);
+  float fineNoise = noise2(uv * 85.0 + lp.zx * 24.0);
+  float edgeJitter = (strands - 0.5) * 0.032;
+  furRough = mix(0.62, 0.80, strands);
+
+  if (part == 1) {
+    // Head: local space ~ radius 0.11, +Z is forward muzzle, +Y is crown
+    float ax = abs(lp.x);
+    // White central blaze between eyes & over muzzle
+    float blazeWidth = mix(0.022, 0.056, smoothstep(0.035, 0.105, lp.z));
+    blazeWidth = mix(blazeWidth, 0.044, smoothstep(0.03, 0.10, lp.y));
+    float isPatch = smoothstep(blazeWidth - 0.008, blazeWidth + 0.014, ax + edgeJitter);
+    // Keep lower muzzle & chin softly white
+    float muzzleWhite = smoothstep(0.068, 0.112, lp.z) * smoothstep(0.03, -0.02, lp.y);
+    isPatch *= (1.0 - muzzleWhite * 0.92);
+    // Keep underside of jaw white
+    isPatch *= smoothstep(-0.072, -0.025, lp.y + edgeJitter * 0.6);
+
+    // Signature Blenheim lozenge ("kissing spot") on top of crown
+    vec2 crownD = (lp.xz - vec2(0.0, -0.005)) / vec2(0.022, 0.028);
+    float spot = 1.0 - smoothstep(0.72, 1.05, length(crownD) + (strands - 0.5) * 0.35);
+    spot *= smoothstep(0.065, 0.095, lp.y);
+
+    float cMix = clamp(max(isPatch, spot), 0.0, 1.0);
+    vec3 brown = mix(deepMahog, richAmber, 0.45 + 0.45 * strands + 0.15 * smoothstep(-0.05, 0.09, lp.y));
+    vec3 white = mix(warmCream, pearlWhite, 0.55 + 0.4 * fineNoise);
+    vec3 col = mix(white, brown, cMix);
+
+    // Soft rose-warm lip & cheek depth
+    float mouthCrease = smoothstep(0.085, 0.125, lp.z) * smoothstep(0.01, -0.045, lp.y);
+    col = mix(col, col * vec3(0.86, 0.78, 0.74), mouthCrease * 0.35);
+    return col;
+  } else if (part == 2) {
+    // Torso: local +Z is chest/front, +Y is back
+    float saddle = smoothstep(-0.02, 0.065, lp.y + edgeJitter * 1.4);
+    float chestWhite = smoothstep(0.06, 0.16, lp.z + edgeJitter);
+    float backPatch = saddle * (1.0 - chestWhite * 0.95);
+    // Natural organic waist break
+    float wave = sin(lp.z * 16.0) * 0.025 + (strands - 0.5) * 0.05;
+    float sidePatch = smoothstep(0.01, 0.07, lp.y + wave) * smoothstep(-0.19, -0.05, lp.z);
+    float cMix = clamp(max(backPatch * 0.95, sidePatch), 0.0, 1.0);
+    vec3 brown = mix(chestnut, richAmber, 0.35 + 0.5 * strands);
+    vec3 white = mix(warmCream, pearlWhite, 0.5 + 0.45 * fineNoise);
+    return mix(white, brown, cMix);
+  } else if (part == 3) {
+    // Long silky wavy chestnut ears with subtle golden highlights & feathering
+    float waveSheen = 0.5 + 0.5 * sin(uv.y * 22.0 + strands * 4.0);
+    vec3 col = mix(deepMahog, richAmber, 0.35 + 0.45 * waveSheen + 0.2 * strands);
+    float tipFeather = smoothstep(0.84, 1.0, uv.y) * smoothstep(0.35, 0.75, strands);
+    col = mix(col, warmCream, tipFeather * 0.22);
+    furRough = mix(0.46, 0.66, strands);
+    return col;
+  } else if (part == 4) {
+    // Plumed tail: chestnut near root, snow-white fluffy plume along length
+    float plume = smoothstep(0.18, 0.58, uv.y + (strands - 0.5) * 0.18);
+    vec3 brown = mix(chestnut, richAmber, strands);
+    vec3 white = mix(warmCream, pearlWhite, 0.6 + 0.4 * fineNoise);
+    return mix(brown, white, plume);
+  } else if (part == 5) {
+    // Legs & paws: silky pearl-white with subtle warm freckle/spot on upper leg
+    float freckle = smoothstep(0.68, 0.85, strands) * smoothstep(0.35, 0.75, uv.y) * 0.32;
+    vec3 white = mix(warmCream, pearlWhite, 0.55 + 0.4 * fineNoise);
+    return mix(white, richAmber, freckle);
+  }
+  // Pure fluffy cream-white (ruff, belly fluff)
+  return mix(warmCream, pearlWhite, 0.6 + 0.4 * fineNoise);
+}
+
+// Procedural Rainy Post-Rain Window Glass + Outdoor Garden Bokeh + Rainbow
+vec3 renderWindowGlass(vec2 uv, vec3 V) {
+  // Outdoor sky gradient (fresh post-rain luminous blue-gold)
+  vec3 skyTop = vec3(0.42, 0.68, 0.94);
+  vec3 skyMid = vec3(0.78, 0.89, 0.97);
+  vec3 skyHor = vec3(1.00, 0.93, 0.80);
+  vec3 bg = mix(skyHor, skyMid, smoothstep(0.15, 0.55, uv.y));
+  bg = mix(bg, skyTop, smoothstep(0.55, 1.0, uv.y));
+
+  // Soft sunlit sun-glow in upper-left sky
+  float sunD = length((uv - vec2(0.22, 0.82)) * vec2(1.2, 1.0));
+  bg += vec3(1.0, 0.92, 0.72) * exp(-sunD * 3.2) * 0.85;
+
+  // Faint post-rain rainbow arc in the sky (grows gently with happiness)
+  vec2 rbC = vec2(0.72, 0.12);
+  float rbR = length((uv - rbC) * vec2(1.0, 1.15));
+  float rbBand = smoothstep(0.46, 0.52, rbR) * (1.0 - smoothstep(0.58, 0.64, rbR));
+  float rbT = clamp((rbR - 0.48) / 0.12, 0.0, 1.0);
+  vec3 rbCol = 0.5 + 0.5 * cos(6.28318 * (rbT * 0.82 + vec3(0.0, 0.33, 0.67)));
+  bg += rbCol * rbBand * smoothstep(0.28, 0.52, uv.y) * (0.14 + uRainbowStrength * 0.32);
+
+  // Soft defocused wet garden foliage at lower portion
+  float treeH1 = 0.36 + 0.08 * sin(uv.x * 7.0 + uTime * 0.35) + 0.05 * cos(uv.x * 15.0);
+  float treeH2 = 0.25 + 0.06 * sin(uv.x * 11.0 + 1.4 - uTime * 0.45);
+  float foliage1 = 1.0 - smoothstep(treeH1 - 0.08, treeH1 + 0.06, uv.y);
+  float foliage2 = 1.0 - smoothstep(treeH2 - 0.05, treeH2 + 0.05, uv.y);
+  vec3 leafFar = vec3(0.28, 0.49, 0.33);
+  vec3 leafNear = vec3(0.20, 0.42, 0.24);
+  vec3 leafSun = vec3(0.58, 0.72, 0.34);
+  float leafNoise = fbm(uv * vec2(14.0, 12.0) + vec2(uTime * 0.04, 0.0));
+  bg = mix(bg, mix(leafFar, leafSun, leafNoise * 0.65), foliage1 * 0.75);
+  bg = mix(bg, mix(leafNear, leafSun, leafNoise * 0.55), foliage2 * 0.88);
+
+  // Sunlit bokeh sparkles on wet garden leaves
+  for (int i = 0; i < 6; i++) {
+    float fi = float(i);
+    vec2 bp = vec2(fract(fi * 0.37 + 0.12), 0.10 + fract(fi * 0.61) * 0.24);
+    float bd = length((uv - bp) * vec2(1.2, 1.0));
+    float bGlow = smoothstep(0.055, 0.015, bd) * (0.4 + 0.3 * sin(uTime * 1.2 + fi * 2.1));
+    bg += vec3(1.0, 0.96, 0.78) * bGlow * 0.35;
+  }
+
+  // Animated glistening raindrops on the window glass!
+  vec2 dropUV = uv * vec2(11.0, 7.0);
+  vec2 cell = floor(dropUV);
+  vec2 f = fract(dropUV) - 0.5;
+  float h = hash21(cell);
+  float slideSpeed = 0.08 + h * 0.11 + uRainSlide * 0.38;
+  float yCycle = fract(uTime * slideSpeed + h * 17.0);
+  float dropY = 0.38 - yCycle * 0.78;
+  float wobbleX = sin(yCycle * 10.0 + h * 30.0) * 0.07;
+  vec2 dp = f - vec2((h - 0.5) * 0.45 + wobbleX, dropY);
+  dp.y *= 0.72; // teardrop stretch
+  float r = length(dp);
+  float dropMask = smoothstep(0.145, 0.09, r);
+  // Specular sunlit glint inside each drop
+  float dropSpec = smoothstep(0.065, 0.015, length(dp - vec2(-0.032, 0.038)));
+  float dropRim = smoothstep(0.13, 0.08, r) * smoothstep(0.04, 0.12, r);
+  // Faint wet trail above moving drop
+  float trailX = abs(dp.x);
+  float trail = smoothstep(0.04, 0.005, trailX) * smoothstep(-0.02, 0.08, dp.y) * smoothstep(0.45, 0.05, dp.y);
+
+  bg = mix(bg, bg * 0.92 + vec3(0.08, 0.11, 0.13), dropMask * 0.45 + trail * 0.12);
+  bg += vec3(1.0, 0.97, 0.90) * (dropSpec * 0.95 + dropRim * 0.25);
+
+  // Static tiny dew beads
+  vec2 microUV = uv * vec2(34.0, 26.0);
+  vec2 mc = floor(microUV);
+  vec2 mf = fract(microUV) - 0.5;
+  float mh = hash21(mc + 41.7);
+  if (mh > 0.62) {
+    vec2 mp = mf - (vec2(hash21(mc + 3.1), hash21(mc + 9.2)) - 0.5) * 0.45;
+    float mr = length(mp);
+    float mm = smoothstep(0.16, 0.09, mr);
+    float ms = smoothstep(0.07, 0.01, length(mp - vec2(-0.035, 0.035)));
+    bg = mix(bg, bg * 0.94 + vec3(0.05), mm * 0.35);
+    bg += vec3(1.0, 0.98, 0.92) * ms * 0.65;
+  }
+
+  return bg;
+}
+
+void main() {
+  vec3 N = normalize(vWorldNorm);
+  vec3 V = normalize(uCamPos - vWorldPos);
+  vec3 L = normalize(uSunDir);
+
+  // Window Glass special shader
+  if (uMatMode == 5) {
+    vec3 winCol = renderWindowGlass(vUV, V);
+    // Subtle warm indoor glass Fresnel reflection
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0);
+    winCol = mix(winCol, vec3(0.95, 0.89, 0.80), fres * 0.14);
+    fragColor = vec4(winCol * 1.18, 1.0);
+    return;
+  }
+
+  // Base albedo & PBR properties
+  vec2 tuv = vUV * uPBR.w;
+  vec3 texCol = texture(uTex, tuv).rgb;
+  vec3 albedo = uBaseColor.rgb * vColor.rgb * texCol;
+  float rough = clamp(uPBR.x, 0.04, 0.98);
+  float metal = uPBR.y;
+  float sheen = uPBR.z;
+  float alpha = uBaseColor.a * vColor.a;
+
+  // Mode 1: Silky Cavalier Fur
+  if (uMatMode == 1) {
+    float furR;
+    vec3 furCol = blenheimFurColor(vLocalPos, vUV, uFurPart, furR);
+    albedo = furCol * uBaseColor.rgb * mix(vec3(1.0), texCol, 0.28);
+    rough = furR;
+    // Subtle anisotropic fur strand normal perturbation
+    float f1 = fbm(vUV * vec2(42.0, 18.0) + vLocalPos.xy * 18.0);
+    float f2 = fbm(vUV * vec2(42.0, 18.0) + vLocalPos.xy * 18.0 + vec2(0.15, 0.0));
+    N = normalize(N + vec3((f1 - 0.5) * 0.14, (f2 - 0.5) * 0.12, 0.0));
+  }
+  // Mode 2: Liquid Realistic Dog Eye
+  else if (uMatMode == 2) {
+    // Local +Z is forward gaze of eyeball
+    vec3 lp = normalize(vLocalPos);
+    float rIris = length(lp.xy);
+    float frontMask = smoothstep(-0.05, 0.15, lp.z);
+    vec3 sclera = vec3(0.76, 0.72, 0.67);
+    vec3 limbal = vec3(0.06, 0.03, 0.02);
+    vec3 irisOuter = vec3(0.18, 0.085, 0.035);
+    vec3 irisInner = vec3(0.34, 0.17, 0.065);
+    vec3 pupil = vec3(0.015, 0.01, 0.01);
+
+    float inIris = (1.0 - smoothstep(0.62, 0.69, rIris)) * frontMask;
+    float inPupil = (1.0 - smoothstep(0.30, 0.36, rIris)) * frontMask;
+    float irisRing = smoothstep(0.52, 0.66, rIris);
+    float radial = 0.5 + 0.5 * sin(atan(lp.y, lp.x) * 26.0 + rIris * 12.0);
+
+    vec3 irisCol = mix(irisInner, irisOuter, smoothstep(0.32, 0.60, rIris));
+    irisCol += vec3(0.11, 0.06, 0.022) * radial * smoothstep(0.62, 0.36, rIris);
+    irisCol = mix(irisCol, limbal, irisRing * 0.7);
+    // Warm sunlit crescent at bottom of iris (corneal caustics!)
+    float caustic = smoothstep(0.1, -0.55, lp.y) * inIris * (1.0 - inPupil);
+    irisCol += vec3(0.30, 0.16, 0.05) * caustic * 0.72;
+
+    albedo = mix(sclera, irisCol, inIris);
+    albedo = mix(albedo, pupil, inPupil);
+    rough = 0.04;
+  }
+  // Mode 3: Wet Gloss (Paste, Wet Nose, Pink Tongue)
+  else if (uMatMode == 3) {
+    // Savory micro-flecks for paste or tiny pebble texture for nose
+    float micro = fbm(vLocalPos.xz * 48.0 + vLocalPos.xy * 36.0);
+    if (uFurPart == 10) {
+      // Wet food paste: creamy subsurface + tiny savory herbs/flecks
+      float fleck = smoothstep(0.72, 0.85, noise2(vLocalPos.xz * 72.0 + vLocalPos.y * 55.0));
+      albedo = mix(albedo, albedo * vec3(0.78, 0.68, 0.58), fleck * 0.35);
+      N = normalize(N + vec3((micro - 0.5) * 0.16, 0.0, (micro - 0.5) * 0.16));
+      rough = 0.13;
+    } else if (uFurPart == 11) {
+      // Dog wet nose leather
+      N = normalize(N + vec3((micro - 0.5) * 0.25, (micro - 0.5) * 0.25, 0.0));
+      rough = 0.14;
+    } else {
+      // Wet pink tongue
+      rough = 0.15;
+    }
+  }
+  // Mode 4: Animated Rippling Water Dish
+  else if (uMatMode == 4) {
+    vec2 p = vLocalPos.xz;
+    vec2 grad = vec2(0.0);
+    float hSum = 0.0;
+    for (int i = 0; i < 4; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w > 0.001) {
+        float age = uTime - rp.z;
+        if (age > 0.0 && age < 2.2) {
+          vec2 d = p - rp.xy;
+          float dist = length(d) + 0.0001;
+          float wavePos = age * 0.28;
+          float env = exp(-abs(dist - wavePos) * 26.0) * exp(-age * 1.6) * rp.w;
+          float ph = (dist - wavePos) * 75.0;
+          hSum += sin(ph) * env;
+          grad += (d / dist) * cos(ph) * env * 1.8;
+        }
+      }
+    }
+    // Gentle ambient micro-shimmer
+    grad.x += sin(p.x * 40.0 + uTime * 2.1) * 0.025;
+    grad.y += cos(p.y * 40.0 - uTime * 1.8) * 0.025;
+    N = normalize(vec3(-grad.x, 1.0, -grad.y));
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 3.2);
+    vec3 waterDeep = vec3(0.76, 0.88, 0.90);
+    vec3 reflCol = mix(uSkyColor * 1.25, vec3(1.0, 0.96, 0.88), 0.45);
+    albedo = mix(waterDeep, reflCol, clamp(0.28 + fres * 0.65, 0.0, 0.95));
+    rough = 0.05;
+    alpha = 0.82;
+  }
+
+  // Soft shadow from sunlit window
+  float shadow = calcShadow(vLightSpacePos, N, L);
+
+  // Cook-Torrance GGX Lighting
+  vec3 H = normalize(L + V);
+  float NdotL = max(dot(N, L), 0.0);
+  float NdotV = max(dot(N, V), 0.001);
+  float NdotH = max(dot(N, H), 0.0);
+  float VdotH = max(dot(V, H), 0.0);
+
+  vec3 F0 = mix(vec3(0.04), albedo, metal);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+
+  float a = rough * rough;
+  float a2 = a * a;
+  float denom = (NdotH * NdotH * (a2 - 1.0) + 1.0);
+  float D = a2 / max(PI * denom * denom, 0.0001);
+
+  float k = (rough + 1.0) * (rough + 1.0) / 8.0;
+  float G = (NdotV / (NdotV * (1.0 - k) + k)) * (NdotL / (NdotL * (1.0 - k) + k));
+  vec3 spec = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+
+  // Soft wrap diffuse for fur & wet paste (creates warm organic softness!)
+  float wrap = (uMatMode == 1) ? 0.36 : ((uMatMode == 3 && uFurPart == 10) ? 0.25 : 0.0);
+  float diffTerm = max((dot(N, L) + wrap) / (1.0 + wrap), 0.0);
+  vec3 kD = (1.0 - F) * (1.0 - metal);
+  vec3 direct = (kD * albedo / PI * diffTerm + spec * NdotL) * uSunColor * mix(0.22, 1.0, shadow);
+
+  // Warm front-right fill light (bounced afternoon room glow, keeps puppy face luminous!)
+  vec3 L2 = normalize(vec3(0.55, 0.62, 0.78));
+  vec3 H2 = normalize(L2 + V);
+  float diff2 = max((dot(N, L2) + wrap) / (1.0 + wrap), 0.0);
+  float spec2 = pow(max(dot(N, H2), 0.0), mix(180.0, 12.0, rough)) * mix(0.32, 0.03, rough);
+  vec3 fillLight = (albedo * diff2 * 0.42 + vec3(spec2) * 0.35) * vec3(1.0, 0.94, 0.87);
+
+  // Back-left golden post-rain window rim light!
+  vec3 L3 = normalize(vec3(-0.68, 0.58, -0.62));
+  float rimNdotL = max(dot(N, L3), 0.0);
+  float rimFres = pow(1.0 - NdotV, 3.0);
+  vec3 rimLight = uSunColor * rimFres * (0.18 + 0.55 * rimNdotL) * (0.28 + sheen * 1.15);
+
+  // Hemisphere ambient (post-rain sky above + warm honey wood bounce below)
+  float hemi = N.y * 0.5 + 0.5;
+  vec3 ambient = mix(uBounceColor, uSkyColor, hemi) * albedo * 0.48;
+
+  // Velvet/Fur sheen grazing glow
+  if (sheen > 0.01) {
+    ambient += albedo * rimFres * sheen * 0.30 * uSunColor;
+  }
+
+  vec3 color = ambient + direct + fillLight + rimLight;
+
+  // Crisp realistic sunlit window catchlights on Dog Eyes!
+  if (uMatMode == 2) {
+    vec3 R = reflect(-V, N);
+    // Primary sunlit window pane catchlight (upper-left)
+    vec3 wDir1 = normalize(vec3(-0.42, 0.56, 0.72));
+    vec3 wDir2 = normalize(vec3(-0.22, 0.56, 0.80));
+    float c1 = smoothstep(0.985, 0.996, dot(R, wDir1));
+    float c2 = smoothstep(0.990, 0.997, dot(R, wDir2));
+    // Secondary tiny warm room catchlight (lower-right)
+    vec3 wDir3 = normalize(vec3(0.42, -0.18, 0.88));
+    float c3 = smoothstep(0.992, 0.998, dot(R, wDir3));
+    color += vec3(1.0, 0.98, 0.92) * (c1 * 1.35 + c2 * 0.85 + c3 * 0.35);
+  }
+
+  // Wet gloss clearcoat glint (paste, wet nose, wet tongue, water)
+  if (uMatMode == 3 || uMatMode == 4) {
+    vec3 Hc = normalize(normalize(vec3(-0.35, 0.85, 0.45)) + V);
+    float coat = pow(max(dot(N, Hc), 0.0), 96.0);
+    color += vec3(1.0, 0.97, 0.90) * coat * (uMatMode == 4 ? 0.95 : 0.65);
+  }
+
+  // Floor sunlit window-mullion pattern + delicate post-rain rainbow prism caustic!
+  if (uMatMode == 6) {
+    // Diagonal sunlit patch on floorboards/rug from back-left window
+    vec2 sp = vWorldPos.xz - vec2(0.05, 0.12);
+    float beamBox = smoothstep(0.95, 0.55, abs(sp.x - sp.y * 0.32)) * smoothstep(0.88, 0.45, abs(sp.y));
+    // Subtle soft window muntin shadow bars
+    float barX = smoothstep(0.025, 0.06, abs(sp.x - sp.y * 0.32 - 0.05));
+    float barY = smoothstep(0.025, 0.06, abs(sp.y + 0.08));
+    float sunPatch = beamBox * mix(0.72, 1.0, barX * barY) * shadow;
+    color += vec3(0.24, 0.19, 0.11) * sunPatch * (0.75 + uRainbowStrength * 0.35);
+
+    // Delicate rainbow prism shimmer on sunlit floor
+    vec2 rp = (vWorldPos.xz - vec2(0.32, 0.10)) * vec2(2.6, 1.8);
+    float rDist = length(rp);
+    float rMask = exp(-rDist * rDist * 3.2) * (0.18 + uRainbowStrength * 0.82);
+    float rPhase = rp.x * 1.15 + rp.y * 0.65;
+    vec3 prism = 0.5 + 0.5 * cos(6.28318 * (rPhase * 0.55 + vec3(0.0, 0.33, 0.67)));
+    color += prism * rMask * 0.22;
+  }
+
+  // Gentle tactile hover/interactive warm glow (subtle & diegetic)
+  if (uHighlight.w > 0.001) {
+    color += uHighlight.rgb * (0.08 + rimFres * 0.22) * uHighlight.w;
+  }
+
+  // Subtle cozy atmospheric depth mist near back wall
+  float camDist = length(uCamPos - vWorldPos);
+  float fog = smoothstep(2.2, 5.2, camDist) * 0.22;
+  color = mix(color, vec3(0.95, 0.90, 0.82), fog);
+
+  fragColor = vec4(color, alpha);
+}`;
+
+// --- Volumetric Sunbeam / Sparkle Particle Shader ---
+const FX_VS = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNorm;
+layout(location=2) in vec2 aUV;
+uniform mat4 uVP;
+uniform mat4 uModel;
+out vec2 vUV;
+out vec3 vWorldPos;
+void main() {
+  vec4 wp = uModel * vec4(aPos, 1.0);
+  vWorldPos = wp.xyz;
+  vUV = aUV;
+  gl_Position = uVP * wp;
+}`;
+
+const FX_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+in vec3 vWorldPos;
+uniform vec4 uColor;
+uniform float uTime;
+uniform int uFxMode; // 0: sunbeam shaft, 1: glowing sparkle mote
+out vec4 fragColor;
+void main() {
+  if (uFxMode == 0) {
+    float edgeX = sin(vUV.x * 3.14159);
+    float fadeY = smoothstep(0.0, 0.25, vUV.y) * smoothstep(1.0, 0.15, vUV.y);
+    float shimmer = 0.86 + 0.14 * sin(vUV.x * 9.0 + uTime * 0.45);
+    float a = edgeX * edgeX * fadeY * shimmer * uColor.a;
+    fragColor = vec4(uColor.rgb * a, a);
+  } else {
+    vec2 p = vUV * 2.0 - 1.0;
+    float d = length(p);
+    float core = exp(-d * d * 5.5);
+    float star = exp(-abs(p.x) * 9.0) * exp(-abs(p.y) * 2.2) + exp(-abs(p.y) * 9.0) * exp(-abs(p.x) * 2.2);
+    float g = (core + star * 0.45) * smoothstep(1.0, 0.2, d) * uColor.a;
+    fragColor = vec4(uColor.rgb * g, g);
+  }
+}`;
+
+// --- ACES Filmic Tone Mapping + Warm Bloom Post-Process Shader ---
+const POST_VS = `#version 300 es
+out vec2 vUV;
+void main() {
+  vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  vUV = pos;
+  gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const POST_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uScene;
+uniform vec2 uTexelSize;
+out vec4 fragColor;
+
+vec3 aces(vec3 x) {
+  const float a = 2.51;
+  const float b = 0.03;
+  const float c = 2.43;
+  const float d = 0.59;
+  const float e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+  vec3 col = texture(uScene, vUV).rgb;
+
+  // Lightweight warm sunlit bloom (12-tap cross/ring)
+  vec3 bloom = vec3(0.0);
+  const vec2 offs[8] = vec2[8](
+    vec2(-2.0, 0.0), vec2(2.0, 0.0), vec2(0.0, -2.0), vec2(0.0, 2.0),
+    vec2(-4.0, -4.0), vec2(4.0, -4.0), vec2(-4.0, 4.0), vec2(4.0, 4.0)
+  );
+  for (int i = 0; i < 8; i++) {
+    vec3 s = texture(uScene, vUV + offs[i] * uTexelSize * 2.4).rgb;
+    float lum = dot(s, vec3(0.299, 0.587, 0.114));
+    bloom += s * smoothstep(0.85, 1.55, lum);
+  }
+  col += (bloom / 8.0) * 0.24 * vec3(1.04, 0.99, 0.90);
+
+  // ACES filmic tone map & gentle sunlit warmth
+  col *= 1.06;
+  col = aces(col);
+
+  // Subtle photographic vignette
+  vec2 d = vUV - 0.5;
+  float vig = 1.0 - dot(d, d) * 0.26;
+  col *= vig;
+
+  // Gamma to sRGB
+  col = pow(max(col, vec3(0.0)), vec3(1.0 / 2.2));
+  fragColor = vec4(col, 1.0);
+}`;
+
+const shadowProg = createProgram(SHADOW_VS, SHADOW_FS);
+const mainProg = createProgram(MAIN_VS, MAIN_FS);
+const fxProg = createProgram(FX_VS, FX_FS);
+const postProg = createProgram(POST_VS, POST_FS);
+
+// ============================================================================
+// 4. PROCEDURAL HIGH-RES TEXTURES (Canvas2D -> WebGL2)
+// ============================================================================
+function makeCanvasTex(size, drawFn, repeat = true) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  drawFn(ctx, size);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const wrap = repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+  return tex;
+}
+
+const TEX = {};
+
+// White 1x1 default texture
+TEX.white = makeCanvasTex(4, (ctx, s) => {
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, s, s);
+});
+
+// Warm Honey-Oak Wood Floorboards
+TEX.wood = makeCanvasTex(512, (ctx, s) => {
+  ctx.fillStyle = '#c49868';
+  ctx.fillRect(0, 0, s, s);
+  const planks = 6;
+  const pw = s / planks;
+  for (let p = 0; p < planks; p++) {
+    const shade = 0.92 + (p * 37 % 17) * 0.01;
+    ctx.fillStyle = `rgb(${Math.round(196 * shade)},${Math.round(148 * shade)},${Math.round(101 * shade)})`;
+    ctx.fillRect(p * pw, 0, pw, s);
+    // Fine grain lines
+    for (let i = 0; i < 70; i++) {
+      const gx = p * pw + Math.random() * pw;
+      ctx.strokeStyle = Math.random() > 0.45 ? 'rgba(110,66,30,0.12)' : 'rgba(235,198,150,0.11)';
+      ctx.lineWidth = 0.8 + Math.random() * 1.8;
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      for (let y = 0; y <= s; y += 32) {
+        ctx.lineTo(gx + Math.sin(y * 0.02 + p * 2.1 + i) * 3.5, y);
+      }
+      ctx.stroke();
+    }
+    // Plank vertical seam
+    ctx.fillStyle = 'rgba(72,42,20,0.34)';
+    ctx.fillRect(p * pw, 0, 2, s);
+    // Staggered horizontal seam
+    const hy = ((p * 173) % s);
+    ctx.fillRect(p * pw, hy, pw, 2);
+  }
+});
+
+// Plush Woven Cream-and-Peach Living Room Rug
+TEX.rug = makeCanvasTex(512, (ctx, s) => {
+  ctx.fillStyle = '#eee5d8';
+  ctx.fillRect(0, 0, s, s);
+  const cx = s / 2, cy = s / 2;
+  for (let r = 8; r < s * 0.52; r += 5) {
+    const band = Math.floor(r / 34) % 4;
+    const cols = ['#efe6da', '#e8d7c6', '#f2dfd3', '#e5dcd0'];
+    ctx.strokeStyle = cols[band];
+    ctx.lineWidth = 4.4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    // Braided stitch marks
+    const steps = Math.max(12, Math.floor(r * 0.9));
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2 + (r % 2) * 0.1;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(150,126,104,0.16)' : 'rgba(255,252,246,0.22)';
+      ctx.fillRect(x - 1, y - 1, 2.2, 2.2);
+    }
+  }
+}, false);
+
+// Handmade Speckled Stoneware Ceramic
+TEX.ceramic = makeCanvasTex(256, (ctx, s) => {
+  ctx.fillStyle = '#f6f1ea';
+  ctx.fillRect(0, 0, s, s);
+  for (let i = 0; i < 420; i++) {
+    const x = Math.random() * s, y = Math.random() * s;
+    const r = 0.6 + Math.random() * 1.4;
+    ctx.fillStyle = Math.random() > 0.35 ? 'rgba(138,112,88,0.22)' : 'rgba(205,175,148,0.18)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+});
+
+// Soft Woven Linen Fabric (Cushion, Cloth, Curtains)
+TEX.fabric = makeCanvasTex(256, (ctx, s) => {
+  ctx.fillStyle = '#f4eee6';
+  ctx.fillRect(0, 0, s, s);
+  for (let y = 0; y < s; y += 3) {
+    ctx.fillStyle = y % 6 === 0 ? 'rgba(165,142,122,0.09)' : 'rgba(255,255,255,0.10)';
+    ctx.fillRect(0, y, s, 1.5);
+  }
+  for (let x = 0; x < s; x += 3) {
+    ctx.fillStyle = x % 6 === 0 ? 'rgba(155,134,114,0.08)' : 'rgba(255,255,255,0.08)';
+    ctx.fillRect(x, 0, 1.5, s);
+  }
+});
+
+// Fine Silky Fur Strand Micro-Texture
+TEX.fur = makeCanvasTex(256, (ctx, s) => {
+  ctx.fillStyle = '#f2ede6';
+  ctx.fillRect(0, 0, s, s);
+  for (let i = 0; i < 1600; i++) {
+    const x = Math.random() * s, y = Math.random() * s;
+    const len = 8 + Math.random() * 14;
+    ctx.strokeStyle = Math.random() > 0.5 ? 'rgba(255,252,245,0.24)' : 'rgba(128,104,84,0.14)';
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + (Math.random() - 0.5) * 3, y + len);
+    ctx.stroke();
+  }
+});
+
+// Warm Braided Wicker Basket Texture
+TEX.wicker = makeCanvasTex(256, (ctx, s) => {
+  ctx.fillStyle = '#c89e6d';
+  ctx.fillRect(0, 0, s, s);
+  const cell = 16;
+  for (let y = 0; y < s; y += cell) {
+    for (let x = 0; x < s; x += cell) {
+      const alt = ((x / cell) + (y / cell)) % 2 === 0;
+      ctx.fillStyle = alt ? '#d8b07e' : '#b28454';
+      ctx.fillRect(x + 1, y + 1, cell - 2, cell - 2);
+      ctx.fillStyle = 'rgba(72,44,18,0.28)';
+      ctx.fillRect(x, y, cell, 1.5);
+      ctx.fillRect(x, y, 1.5, cell);
+    }
+  }
+});
+
+// Soft Warm Wall Plaster Texture
+TEX.plaster = makeCanvasTex(256, (ctx, s) => {
+  ctx.fillStyle = '#f4ece0';
+  ctx.fillRect(0, 0, s, s);
+  for (let i = 0; i < 900; i++) {
+    const x = Math.random() * s, y = Math.random() * s;
+    const r = 4 + Math.random() * 14;
+    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,252,244,0.06)' : 'rgba(182,162,138,0.05)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+});
+
+// Pastel Stitched Plush Ball Texture
+TEX.ball = makeCanvasTex(256, (ctx, s) => {
+  const cols = ['#f5c2c7', '#fae1b8', '#cbe5d8', '#d7d2f2'];
+  const w = s / 4;
+  for (let i = 0; i < 4; i++) {
+    ctx.fillStyle = cols[i];
+    ctx.fillRect(i * w, 0, w, s);
+    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(i * w + 1, 0); ctx.lineTo(i * w + 1, s);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // Subtle polka dots
+  for (let i = 0; i < 45; i++) {
+    ctx.fillStyle = 'rgba(255,255,255,0.34)';
+    ctx.beginPath();
+    ctx.arc(Math.random() * s, Math.random() * s, 3 + Math.random() * 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+});
+
+// ============================================================================
+// 5. PROCEDURAL 3D MESH BUILDER
+// ============================================================================
+function createMesh(positions, normals, uvs, indices, colors = null) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  const vboP = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vboP);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+  const vboN = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vboN);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+  const vboU = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vboU);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, 0);
+
+  const vertCount = positions.length / 3;
+  const colArr = colors ? new Float32Array(colors) : new Float32Array(vertCount * 4).fill(1);
+  const vboC = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vboC);
+  gl.bufferData(gl.ARRAY_BUFFER, colArr, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(3);
+  gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 0, 0);
+
+  const ebo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+  const idxArr = new Uint16Array(indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idxArr, gl.STATIC_DRAW);
+
+  gl.bindVertexArray(null);
+  return { vao, count: idxArr.length };
+}
+
+function computeSmoothNormals(pos, idx) {
+  const n = new Float32Array(pos.length);
+  for (let i = 0; i < idx.length; i += 3) {
+    const i0 = idx[i] * 3, i1 = idx[i + 1] * 3, i2 = idx[i + 2] * 3;
+    const ax = pos[i1] - pos[i0], ay = pos[i1 + 1] - pos[i0 + 1], az = pos[i1 + 2] - pos[i0 + 2];
+    const bx = pos[i2] - pos[i0], by = pos[i2 + 1] - pos[i0 + 1], bz = pos[i2 + 2] - pos[i0 + 2];
+    const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+    n[i0] += nx; n[i0 + 1] += ny; n[i0 + 2] += nz;
+    n[i1] += nx; n[i1 + 1] += ny; n[i1 + 2] += nz;
+    n[i2] += nx; n[i2 + 1] += ny; n[i2 + 2] += nz;
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const l = Math.hypot(n[i], n[i + 1], n[i + 2]) || 1;
+    n[i] /= l; n[i + 1] /= l; n[i + 2] /= l;
+  }
+  return n;
+}
+
+// High-craft UV Sphere / Deformed Organic Sculpt
+function buildSphere(rx, ry, rz, segU = 24, segV = 18, deformFn = null) {
+  const pos = [], uv = [], idx = [];
+  for (let iv = 0; iv <= segV; iv++) {
+    const v = iv / segV;
+    const phi = v * Math.PI;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let iu = 0; iu <= segU; iu++) {
+      const u = iu / segU;
+      const th = u * Math.PI * 2;
+      let x = rx * sp * Math.cos(th);
+      let y = ry * cp;
+      let z = rz * sp * Math.sin(th);
+      if (deformFn) {
+        const d = deformFn(x, y, z, u, v);
+        x = d[0]; y = d[1]; z = d[2];
+      }
+      pos.push(x, y, z);
+      uv.push(u, v);
+    }
+  }
+  const stride = segU + 1;
+  for (let iv = 0; iv < segV; iv++) {
+    for (let iu = 0; iu < segU; iu++) {
+      const a = iv * stride + iu;
+      const b = a + stride;
+      idx.push(a, a + 1, b);
+      idx.push(b, a + 1, b + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, idx);
+}
+
+// Sculpted Capsule / Tapered Limb along Y (from y=0 down to y=-len, or centered)
+function buildLimb(rTop, rBot, len, segU = 16, segV = 12, yOffset = 0) {
+  const pos = [], uv = [], idx = [];
+  for (let iv = 0; iv <= segV; iv++) {
+    const v = iv / segV;
+    let y, r;
+    if (v < 0.2) {
+      const a = (v / 0.2) * (Math.PI * 0.5);
+      y = rTop * Math.cos(a);
+      r = rTop * Math.sin(a);
+    } else if (v > 0.8) {
+      const a = ((v - 0.8) / 0.2) * (Math.PI * 0.5);
+      y = -len - rBot * Math.sin(a);
+      r = rBot * Math.cos(a);
+    } else {
+      const t = (v - 0.2) / 0.6;
+      y = -len * t;
+      r = lerp(rTop, rBot, t);
+    }
+    for (let iu = 0; iu <= segU; iu++) {
+      const u = iu / segU;
+      const th = u * Math.PI * 2;
+      pos.push(r * Math.cos(th), y + yOffset, r * Math.sin(th));
+      uv.push(u, v);
+    }
+  }
+  const stride = segU + 1;
+  for (let iv = 0; iv < segV; iv++) {
+    for (let iu = 0; iu < segU; iu++) {
+      const a = iv * stride + iu, b = a + stride;
+      idx.push(a, a + 1, b, b, a + 1, b + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, idx);
+}
+
+// Lathe Mesh (for ceramic bowls, water dish, flower pot, spoon handle, etc.)
+function buildLathe(pts, segs = 32) {
+  const pos = [], uv = [], idx = [];
+  for (let iv = 0; iv < pts.length; iv++) {
+    const [r, y] = pts[iv];
+    const v = iv / (pts.length - 1);
+    for (let iu = 0; iu <= segs; iu++) {
+      const u = iu / segs;
+      const th = u * Math.PI * 2;
+      pos.push(r * Math.cos(th), y, r * Math.sin(th));
+      uv.push(u, v);
+    }
+  }
+  const stride = segs + 1;
+  for (let iv = 0; iv < pts.length - 1; iv++) {
+    for (let iu = 0; iu < segs; iu++) {
+      const a = iv * stride + iu, b = a + stride;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, idx);
+}
+
+// Box with clean normals and UVs
+function buildBox(w, h, d, segX = 1, segY = 1) {
+  const hw = w / 2, hh = h / 2, hd = d / 2;
+  const pos = [], norm = [], uv = [], idx = [];
+  const faces = [
+    [[0, 0, 1], [1, 0, 0], [0, 1, 0], [0, 0, hd], hw, hh],
+    [[0, 0, -1], [-1, 0, 0], [0, 1, 0], [0, 0, -hd], hw, hh],
+    [[1, 0, 0], [0, 0, -1], [0, 1, 0], [hw, 0, 0], hd, hh],
+    [[-1, 0, 0], [0, 0, 1], [0, 1, 0], [-hw, 0, 0], hd, hh],
+    [[0, 1, 0], [1, 0, 0], [0, 0, -1], [0, hh, 0], hw, hd],
+    [[0, -1, 0], [1, 0, 0], [0, 0, 1], [0, -hh, 0], hw, hd]
+  ];
+  let base = 0;
+  for (const [n, rx, ry, c, sx, sy] of faces) {
+    for (let iy = 0; iy <= segY; iy++) {
+      const v = iy / segY;
+      const py = (v * 2 - 1) * sy;
+      for (let ix = 0; ix <= segX; ix++) {
+        const u = ix / segX;
+        const px = (u * 2 - 1) * sx;
+        pos.push(c[0] + rx[0] * px + ry[0] * py, c[1] + rx[1] * px + ry[1] * py, c[2] + rx[2] * px + ry[2] * py);
+        norm.push(n[0], n[1], n[2]);
+        uv.push(u, v);
+      }
+    }
+    const st = segX + 1;
+    for (let iy = 0; iy < segY; iy++) {
+      for (let ix = 0; ix < segX; ix++) {
+        const a = base + iy * st + ix, b = a + st;
+        idx.push(a, a + 1, b, b, a + 1, b + 1);
+      }
+    }
+    base += (segX + 1) * (segY + 1);
+  }
+  return createMesh(pos, norm, uv, idx);
+}
+
+// Flat Quad (facing +Z or +Y)
+function buildQuad(w, h, segX = 1, segY = 1, faceUp = false) {
+  const pos = [], norm = [], uv = [], idx = [];
+  for (let iy = 0; iy <= segY; iy++) {
+    const v = iy / segY;
+    for (let ix = 0; ix <= segX; ix++) {
+      const u = ix / segX;
+      const px = (u - 0.5) * w, py = (v - 0.5) * h;
+      if (faceUp) {
+        pos.push(px, 0, -py);
+        norm.push(0, 1, 0);
+      } else {
+        pos.push(px, py, 0);
+        norm.push(0, 0, 1);
+      }
+      uv.push(u, v);
+    }
+  }
+  const st = segX + 1;
+  for (let iy = 0; iy < segY; iy++) {
+    for (let ix = 0; ix < segX; ix++) {
+      const a = iy * st + ix, b = a + st;
+      idx.push(a, a + 1, b, b, a + 1, b + 1);
+    }
+  }
+  return createMesh(pos, norm, uv, idx);
+}
+
+// Disc (for circular rug, water surface)
+function buildDisc(radius, segR = 14, segT = 40, thickness = 0) {
+  const pos = [], norm = [], uv = [], idx = [];
+  pos.push(0, thickness, 0);
+  norm.push(0, 1, 0);
+  uv.push(0.5, 0.5);
+  for (let ir = 1; ir <= segR; ir++) {
+    const fr = ir / segR;
+    const r = radius * fr;
+    const y = thickness * (1 - Math.pow(fr, 8) * 0.65);
+    for (let it = 0; it <= segT; it++) {
+      const th = (it / segT) * Math.PI * 2;
+      const x = r * Math.cos(th), z = r * Math.sin(th);
+      pos.push(x, y, z);
+      norm.push(0, 1, 0);
+      uv.push(0.5 + 0.5 * fr * Math.cos(th), 0.5 + 0.5 * fr * Math.sin(th));
+    }
+  }
+  const st = segT + 1;
+  for (let it = 0; it < segT; it++) {
+    idx.push(0, 1 + it + 1, 1 + it);
+  }
+  for (let ir = 1; ir < segR; ir++) {
+    const rowA = 1 + (ir - 1) * st;
+    const rowB = 1 + ir * st;
+    for (let it = 0; it < segT; it++) {
+      idx.push(rowA + it, rowA + it + 1, rowB + it);
+      idx.push(rowB + it, rowA + it + 1, rowB + it + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, idx);
+}
+
+// ============================================================================
+// 6. SCULPTED GAME MESHES (Cavalier, Pouches, Spoon, Bowls, Room, Props)
+// ============================================================================
+const MESH = {};
+
+// --- Cavalier Head (Sweet Domed Skull + Gentle Stop + Plush Snout & Flews) ---
+MESH.dogHead = buildSphere(0.105, 0.098, 0.106, 34, 26, (x, y, z) => {
+  let ox = x, oy = y, oz = z;
+  // Soft rounded cranium dome
+  if (y > 0.02 && z < 0.04) {
+    oy *= 1.08;
+    ox *= 1.03;
+  }
+  // Sweet Cavalier muzzle protrusion: centered in X and lower in Y so eyes sit cleanly in orbits!
+  if (z > 0.025) {
+    const zT = smoothstep(0.025, 0.105, z);
+    const centerX = Math.exp(-Math.pow(x / 0.046, 2));
+    const lowerY = smoothstep(0.032, -0.025, y);
+    const snoutMask = zT * centerX * lowerY;
+    oz += snoutMask * 0.052;
+    // Soft rounded upper-lip cheeks (flews)
+    const cheek = Math.exp(-Math.pow((Math.abs(x) - 0.026) / 0.024, 2)) *
+                  Math.exp(-Math.pow((y + 0.026) / 0.022, 2)) * zT;
+    ox += Math.sign(x) * cheek * 0.014;
+    oy -= cheek * 0.010;
+    oz += cheek * 0.012;
+  }
+  // Gentle orbital cushion sockets for the big dark Cavalier eyes
+  const eyeD = Math.hypot(Math.abs(x) - 0.046, y - 0.016, z - 0.092);
+  if (eyeD < 0.030) {
+    const indent = Math.pow(1 - eyeD / 0.030, 1.5) * 0.010;
+    oz -= indent;
+  }
+  return [ox, oy, oz];
+});
+
+// Cavalier Lower Jaw
+MESH.dogJaw = buildSphere(0.034, 0.018, 0.046, 16, 12, (x, y, z) => [x, y * (z > 0 ? 0.9 : 1.0), z]);
+
+// Cavalier Wet Nose (cute sculpted kidney/heart shape)
+MESH.dogNose = buildSphere(0.022, 0.015, 0.016, 18, 14, (x, y, z) => {
+  const cleft = Math.exp(-Math.pow(x / 0.006, 2)) * smoothstep(0.004, -0.014, y);
+  const flare = Math.exp(-Math.pow((Math.abs(x) - 0.011) / 0.008, 2)) * smoothstep(-0.006, 0.008, y);
+  return [x * (1 + flare * 0.14), y - cleft * 0.003, z + flare * 0.003 - cleft * 0.002];
+});
+
+// Cavalier Eye + Curved Eyelid Shell
+MESH.dogEye = buildSphere(0.0225, 0.0225, 0.0225, 22, 16);
+MESH.eyelid = buildSphere(0.0246, 0.0246, 0.0246, 20, 10, (x, y, z, u, v) => {
+  const phi = v * Math.PI * 0.54;
+  const th = u * Math.PI * 2;
+  const r = 0.0246;
+  return [r * Math.sin(phi) * Math.cos(th), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(th)];
+});
+
+// Cavalier Wavy Feathered Ear (thin in X, wide & lush in Z, draping past cheeks!)
+MESH.dogEar = buildSphere(0.022, 0.095, 0.054, 20, 20, (x, y, z) => {
+  // Hang from y=0 down to y=-0.19
+  const ny = y - 0.092;
+  const t = clamp(-ny / 0.188, 0, 1);
+  // Wider silky feathered flare toward the bottom with gentle natural waves
+  const widthZ = 0.62 + 0.56 * Math.sin(t * Math.PI * 0.72) + 0.18 * t;
+  const waveX = Math.sin(t * 11.0) * 0.007 * t;
+  const waveZ = Math.cos(t * 8.5) * 0.006 * t;
+  // Slightly cupped around the cheeks
+  const cupX = -(z * z) * 1.1;
+  return [x * (0.72 + 0.28 * (1 - t)) + waveX + cupX, ny, z * widthZ + waveZ];
+});
+
+// Cute Ribbon Collar & Tiny Golden Bell
+MESH.collar = buildLathe([
+  [0.070, -0.012], [0.082, -0.012], [0.085, 0.000], [0.082, 0.012], [0.070, 0.012]
+], 28);
+MESH.bell = buildSphere(0.015, 0.015, 0.015, 16, 12);
+MESH.vase = buildLathe([
+  [0.001, 0.000], [0.034, 0.000], [0.044, 0.036], [0.038, 0.082],
+  [0.022, 0.120], [0.026, 0.136], [0.020, 0.136], [0.018, 0.116], [0.001, 0.012]
+], 24);
+MESH.flower = buildSphere(0.024, 0.012, 0.024, 18, 10, (x, y, z) => {
+  const a = Math.atan2(z, x);
+  const petal = 0.72 + 0.34 * Math.abs(Math.cos(a * 2.5));
+  return [x * petal, y + petal * 0.004, z * petal];
+});
+
+// Cavalier Torso (Plush sculpted chest, soft back, gentle waist & rump)
+MESH.dogTorso = buildSphere(0.118, 0.116, 0.205, 28, 22, (x, y, z) => {
+  let ox = x, oy = y, oz = z;
+  // Broader chest toward +Z, slightly tucked belly toward -Z
+  const frontT = smoothstep(-0.15, 0.15, z);
+  ox *= 0.88 + frontT * 0.18;
+  oy *= 0.92 + frontT * 0.12;
+  // Gentle flat-ish soft back line
+  if (y > 0.05) oy -= (y - 0.05) * 0.16;
+  // Slight waist tuck underneath near hips
+  if (y < -0.02 && z < -0.02) {
+    oy += smoothstep(-0.02, -0.14, z) * 0.022;
+  }
+  return [ox, oy, oz];
+});
+
+// Cavalier Fluffy Chest Ruff
+MESH.dogRuff = buildSphere(0.095, 0.095, 0.072, 20, 16, (x, y, z) => {
+  const tuft = Math.sin(Math.atan2(x, y) * 7.0) * 0.006;
+  return [x * (1 + tuft), y - smoothstep(0.02, -0.08, y) * 0.015, z + smoothstep(0.0, 0.06, z) * 0.01];
+});
+
+// Cavalier Neck, Legs, Paws, Tail Segment, Tongue Segment
+MESH.dogNeck = buildLimb(0.068, 0.078, 0.09, 18, 12, 0.02);
+MESH.dogLegUpper = buildLimb(0.044, 0.032, 0.11, 16, 10, 0);
+MESH.dogLegLower = buildLimb(0.030, 0.025, 0.10, 16, 10, 0);
+MESH.dogPaw = buildSphere(0.034, 0.020, 0.042, 16, 12, (x, y, z) => {
+  // Subtle rounded toe lobes at front (+Z)
+  const toe = Math.cos(x * 130.0) * 0.003 * smoothstep(0.01, 0.04, z);
+  return [x, y < -0.01 ? -0.01 : y, z + toe];
+});
+MESH.dogTailSeg = buildSphere(0.026, 0.048, 0.026, 14, 12, (x, y, z) => {
+  // Feather tuft trailing downward slightly
+  return [x * 0.9, y + 0.035, z - smoothstep(0.0, 0.04, Math.abs(x)) * 0.008];
+});
+MESH.dogTongueSeg = buildSphere(0.017, 0.0065, 0.018, 14, 10, (x, y, z) => [x, y, z + 0.012]);
+
+// --- Ceramic Food Bowl (Handmade Stoneware with Thick Rounded Lip) ---
+MESH.foodBowl = buildLathe([
+  [0.001, 0.000], [0.082, 0.000], [0.096, 0.008], [0.112, 0.032],
+  [0.116, 0.056], [0.113, 0.064], [0.105, 0.065], [0.099, 0.056],
+  [0.092, 0.026], [0.072, 0.014], [0.001, 0.012]
+], 36);
+
+// --- Water Dish (Slightly Smaller Celadon-White Glazed Dish) ---
+MESH.waterBowl = buildLathe([
+  [0.001, 0.000], [0.068, 0.000], [0.082, 0.008], [0.094, 0.030],
+  [0.096, 0.050], [0.092, 0.056], [0.086, 0.056], [0.082, 0.048],
+  [0.076, 0.022], [0.056, 0.012], [0.001, 0.010]
+], 32);
+
+MESH.waterSurface = buildDisc(0.082, 16, 36, 0.0);
+
+// --- Wet-Food Paste Pouch (Gusseted Plump Sachet with Nozzle Tip) ---
+MESH.pouchBody = buildSphere(0.042, 0.074, 0.020, 22, 18, (x, y, z, u, v) => {
+  // Pillowed pouch body from y=-0.072 to +0.072, crimped edges top & bottom
+  const ny = clamp(y / 0.074, -1, 1);
+  const crimpTop = smoothstep(0.72, 0.96, ny);
+  const crimpBot = smoothstep(-0.78, -0.96, ny);
+  const edgeX = smoothstep(0.72, 1.0, Math.abs(x) / 0.042);
+  let oz = z * (1.0 - Math.max(crimpTop, crimpBot) * 0.85) * (1.0 - edgeX * 0.78);
+  // Slight trapezoidal taper toward top nozzle
+  let ox = x * (1.04 - 0.16 * (ny * 0.5 + 0.5));
+  return [ox, y, oz];
+});
+
+// Tear-off top strip of pouch (pops away smoothly when opened!)
+MESH.pouchCap = buildBox(0.068, 0.018, 0.007, 4, 2);
+
+// Glossy Paste Dollop / Blob / Ribbon Segment
+MESH.pasteBlob = buildSphere(0.020, 0.015, 0.020, 16, 12, (x, y, z) => {
+  // Soft creamy swirl peak
+  const peak = smoothstep(0.004, 0.015, y);
+  return [x * (1 - peak * 0.35), y, z * (1 - peak * 0.35)];
+});
+
+// --- Feeding Spoon (Elegant Curved Ceramic/Silver Spoon) ---
+MESH.spoonHandle = buildLimb(0.0085, 0.006, 0.135, 12, 8, 0);
+MESH.spoonScoop = buildSphere(0.025, 0.011, 0.036, 18, 14, (x, y, z) => {
+  // Concave shallow bowl on +Y
+  const oy = y > 0 ? -y * 0.45 : y;
+  return [x * (1 - smoothstep(0.01, 0.036, z) * 0.25), oy, z];
+});
+
+// --- Soft Folded Pastel Linen Cloth ---
+MESH.cloth = buildBox(0.14, 0.022, 0.12, 8, 4);
+
+// --- Plush Pastel Ribbon Ball ---
+MESH.plushBall = buildSphere(0.062, 0.062, 0.062, 24, 18);
+
+// --- Cozy Sunlit Dog Cushion (Plush Oval Bolster Bed) ---
+MESH.cushion = buildSphere(0.35, 0.068, 0.29, 32, 18, (x, y, z) => {
+  const r = Math.hypot(x / 0.35, z / 0.29);
+  // Cozy slight dip in center, plump bolster rim around edge
+  const dip = y > 0 ? (1 - smoothstep(0.15, 0.88, r)) * 0.026 : 0;
+  const flatBot = y < -0.04 ? -0.04 : y;
+  return [x, flatBot - dip, z];
+});
+
+// --- Woven Refill Basket ---
+MESH.basket = buildLathe([
+  [0.001, 0.000], [0.105, 0.000], [0.132, 0.045], [0.145, 0.112],
+  [0.148, 0.122], [0.134, 0.124], [0.126, 0.110], [0.112, 0.022], [0.001, 0.016]
+], 28);
+
+// --- Room & Furniture Meshes ---
+MESH.floor = buildQuad(7.0, 6.0, 4, 4, true);
+MESH.rug = buildDisc(1.12, 16, 48, 0.014);
+MESH.tray = buildBox(0.96, 0.020, 0.40, 2, 1);
+MESH.caddy = buildBox(0.32, 0.042, 0.15, 2, 1);
+MESH.wall = buildBox(7.2, 3.6, 0.12, 1, 1);
+MESH.unitBox = buildBox(1, 1, 1, 1, 1);
+MESH.windowGlass = buildQuad(1.68, 1.38, 2, 2, false);
+MESH.curtain = buildQuad(0.58, 1.85, 10, 14, false);
+MESH.sunbeam = buildQuad(1.35, 2.5, 4, 4, false);
+MESH.sparkle = buildQuad(1, 1, 1, 1, false);
+MESH.pot = buildLathe([
+  [0.001, 0.000], [0.068, 0.000], [0.088, 0.130], [0.095, 0.142],
+  [0.082, 0.144], [0.076, 0.120], [0.001, 0.118]
+], 24);
+MESH.leaf = buildSphere(0.055, 0.006, 0.095, 12, 10, (x, y, z) => {
+  const arch = -(z * z) * 2.2;
+  const tip = 1.0 - smoothstep(0.01, 0.095, z) * 0.72;
+  return [x * tip, y + arch, z + 0.075];
+});
+
+// ============================================================================
+// 7. FRAMEBUFFERS (Shadow Map + HDR Scene Buffer)
+// ============================================================================
+const SHADOW_SIZE = 2048;
+const shadowTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const shadowFBO = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+gl.drawBuffers([gl.NONE]);
+gl.readBuffer(gl.NONE);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+// Scene Post-Processing FBO
+const hasHalfFloat = !!gl.getExtension('EXT_color_buffer_float');
+let sceneFBO = null, sceneColTex = null, sceneDepthRB = null;
+let fboW = 1, fboH = 1, usePostFBO = true;
+
+function resizeRenderTargets() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+  const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+  if (canvas.width === w && canvas.height === h && sceneFBO) return;
+  canvas.width = w;
+  canvas.height = h;
+  fboW = w; fboH = h;
+
+  if (sceneFBO) gl.deleteFramebuffer(sceneFBO);
+  if (sceneColTex) gl.deleteTexture(sceneColTex);
+  if (sceneDepthRB) gl.deleteRenderbuffer(sceneDepthRB);
+
+  sceneFBO = gl.createFramebuffer();
+  sceneColTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, sceneColTex);
+  if (hasHalfFloat) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  sceneDepthRB = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, sceneDepthRB);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneColTex, 0);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneDepthRB);
+  usePostFBO = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+window.addEventListener('resize', resizeRenderTargets);
+resizeRenderTargets();
+
+// ============================================================================
+// 8. GAME WORLD STATE, INTERACTIVE PROPS & PASTE SYSTEM
+// ============================================================================
+const FLAVORS = [
+  { name: 'salmon',  pouchCol: [0.95, 0.68, 0.64], pasteCol: [0.94, 0.56, 0.47], accent: [0.98, 0.85, 0.82] },
+  { name: 'pumpkin', pouchCol: [0.96, 0.82, 0.54], pasteCol: [0.93, 0.67, 0.29], accent: [0.99, 0.92, 0.76] },
+  { name: 'chicken', pouchCol: [0.93, 0.86, 0.76], pasteCol: [0.91, 0.81, 0.65], accent: [0.98, 0.95, 0.89] }
+];
+
+// Pouches resting in the wooden tray caddy
+const pouches = FLAVORS.map((fl, i) => {
+  const home = [0.24 + i * 0.105, 0.095, 0.42 - (i === 1 ? 0.045 : 0.0)];
+  return {
+    id: i,
+    flavor: fl,
+    home: [...home],
+    pos: [...home],
+    nozzleWorld: [home[0], home[1] + 0.08, home[2]],
+    rot: [0.16, -0.22 - i * 0.12, (i - 1) * -0.07],
+    open: false,
+    openAnim: 0,
+    fill: 1.0,
+    squeezePulse: 0,
+    popBounce: 0
+  };
+});
+
+// Spoon
+const spoon = {
+  home: [0.095, 0.042, 0.46],
+  pos: [0.095, 0.042, 0.46],
+  rot: [0.05, 0.52, 0.0],
+  pasteAmt: 0.0, // 0..1
+  pasteCol: [0.94, 0.56, 0.47]
+};
+
+// Soft Pastel Linen Cloth
+const cloth = {
+  home: [-0.36, 0.036, 0.50],
+  pos: [-0.36, 0.036, 0.50],
+  rot: [0, 0.18, 0],
+  wiggle: 0
+};
+
+// Plush Ribbon Ball
+const ball = {
+  pos: [-0.52, 0.066, 0.06],
+  vel: [0, 0, 0],
+  rot: [0, 0, 0],
+  radius: 0.062,
+  chased: false
+};
+
+// Ceramic Bowls
+const FOOD_BOWL_POS = [-0.08, 0.025, 0.34];
+const WATER_BOWL_POS = [-0.33, 0.025, 0.30];
+const BASKET_POS = [0.60, 0.015, 0.14];
+const CUSHION_POS = [-0.36, 0.02, -0.44];
+
+// Bowl Paste Blobs (dynamic 3D glossy mound inside the ceramic food bowl)
+const bowlBlobs = []; // { x, y, z, scale, color: [r,g,b], flavorIdx }
+const MAX_BOWL_BLOBS = 34;
+
+// Active Paste Ribbon (extruding from squeezed pouch)
+const pasteRibbon = []; // { pos: [x,y,z], col: [r,g,b], r, age }
+
+// Water Ripples (up to 4 simultaneous expanding rings)
+const waterRipples = [
+  [0, 0, -10, 0], [0, 0, -10, 0], [0, 0, -10, 0], [0, 0, -10, 0]
+];
+let nextRippleIdx = 0;
+function spawnWaterRipple(lx = 0, lz = 0, strength = 1.0) {
+  waterRipples[nextRippleIdx] = [lx, lz, world.time, strength];
+  nextRippleIdx = (nextRippleIdx + 1) % 4;
+}
+
+// Golden Sparkle & Dewdrop Motes
+const sparkles = [];
+function spawnSparkle(x, y, z, col = [1.0, 0.94, 0.72], count = 4, spread = 0.08) {
+  for (let i = 0; i < count; i++) {
+    sparkles.push({
+      x: x + (Math.random() - 0.5) * spread,
+      y: y + (Math.random() - 0.5) * spread * 0.7,
+      z: z + (Math.random() - 0.5) * spread,
+      vx: (Math.random() - 0.5) * 0.14,
+      vy: 0.12 + Math.random() * 0.18,
+      vz: (Math.random() - 0.5) * 0.12,
+      col,
+      size: 0.022 + Math.random() * 0.024,
+      age: 0,
+      life: 0.9 + Math.random() * 0.8
+    });
+  }
+}
+
+// Ambient floating sunlit dust motes
+const dustMotes = [];
+for (let i = 0; i < 28; i++) {
+  dustMotes.push({
+    x: -0.9 + Math.random() * 1.8,
+    y: 0.12 + Math.random() * 1.15,
+    z: -0.9 + Math.random() * 1.4,
+    phase: Math.random() * Math.PI * 2,
+    speed: 0.25 + Math.random() * 0.35,
+    size: 0.012 + Math.random() * 0.014
+  });
+}
+
+// World Mood & Interactive Props State
+const world = {
+  time: 0,
+  happiness: 0.18,      // grows gently with feeding, petting, wiping, playing (0..1)
+  fullness: 0.0,        // tracks feeding progress toward cozy belly-bliss & celebration
+  licksSinceSmear: 0,
+  licksSinceDrink: 0,
+  rainSlideBoost: 0,
+  curtainBreeze: 0.028,
+  plantShake: 0,
+  rainbowStrength: 0.15,
+  camOffset: [0, 0],
+  camOffsetTarget: [0, 0],
+  idleTimer: 0,
+  celebrated1: false,
+  celebrated2: false,
+  bellyBlissTriggered: false
+};
+
+// ============================================================================
+// 9. CAVALIER KING CHARLES SPANIEL (Rig, AI, Secondary Physics & Animation)
+// ============================================================================
+class CavalierDog {
+  constructor() {
+    this.pos = [CUSHION_POS[0] + 0.02, 0.055, CUSHION_POS[2] + 0.04];
+    this.yaw = 0.42;
+    this.targetPos = [...this.pos];
+    this.targetYaw = this.yaw;
+
+    // Behavioral state machine
+    this.state = 'SLEEPING'; // SLEEPING, WAKING, SITTING, WALKING, EATING_BOWL, DRINKING, PLAYING_BALL, HAPPY_SPIN, BELLY_BLISS
+    this.stateTimer = 0;
+    this.wakeDelay = 2.4;
+
+    // Posture parameters (smoothly damped)
+    this.sitAmount = 0.0;      // 0: standing, 1: sitting
+    this.lieAmount = 1.0;      // 0: upright, 1: curled lying down
+    this.bellyRoll = 0.0;      // 0: normal, 1: rolled blissfully showing fluffy belly
+    this.stretchBow = 0.0;     // 0..1 play-bow stretch
+    this.standTall = 0.0;      // 0..1 standing on hind paws reaching for high paste!
+    this.bodyPitch = 0.0;
+    this.bodyY = 0.0;
+    this.walkPhase = 0.0;
+
+    // Head & facial animation
+    this.lookTarget = [0.0, 0.45, 0.9];
+    this.headYaw = 0;
+    this.headPitch = 0;
+    this.headTilt = 0;
+    this.headTiltTarget = 0;
+    this.jawOpen = 0;
+    this.tongueOut = 0;
+    this.tongueCurl = 0;
+    this.lickPhase = 0;
+    this.isLicking = false;
+    this.lickIntensity = 0;
+    this.blink = 0;
+    this.blinkTimer = 2.2;
+    this.happySquint = 0;      // 0..1 blissful happy eyes
+    this.sniffPulse = 0;
+    this.petGlow = 0;
+    this.bellyKick = 0;
+
+    // Secondary spring-damper physics for floppy ears & tail
+    this.earL = { angleZ: 0.18, velZ: 0, angleX: 0, velX: 0 };
+    this.earR = { angleZ: -0.18, velZ: 0, angleX: 0, velX: 0 };
+    this.prevHeadYaw = 0;
+    this.prevHeadPitch = 0;
+    this.earShake = 0;
+
+    this.tailPhase = 0;
+    this.tailSpeed = 3.2;
+    this.tailAmp = 0.22;
+
+    // Cute paste smears on nose & cheeks! { local: [x,y,z], col: [r,g,b], size }
+    this.smears = [];
+
+    // Cached world positions for exact interaction (mouth, head, body, belly)
+    this.mouthWorld = V3.create(0, 0.35, 0);
+    this.headWorld = V3.create(0, 0.40, 0);
+    this.bodyWorld = V3.create(0, 0.25, 0);
+    this.noseWorld = V3.create(0, 0.37, 0);
+  }
+
+  addSmear(col) {
+    if (this.smears.length >= 3) return;
+    const spots = [
+      [0.006, 0.008, 0.166],   // right on tip of nose!
+      [-0.032, -0.018, 0.132], // left plush cheek
+      [0.032, -0.018, 0.132]   // right plush cheek
+    ];
+    const spot = spots[this.smears.length];
+    this.smears.push({
+      local: [...spot],
+      col: [...col],
+      size: 0.0125 + Math.random() * 0.004
+    });
+  }
+
+  wipeSmears(amount = 0.05) {
+    if (this.smears.length === 0) return false;
+    const last = this.smears[this.smears.length - 1];
+    last.size -= amount;
+    if (last.size <= 0.002) {
+      this.smears.pop();
+      spawnSparkle(this.noseWorld[0], this.noseWorld[1] + 0.02, this.noseWorld[2], [1.0, 0.96, 0.84], 8, 0.10);
+      audio.playChime(-1);
+      world.happiness = clamp(world.happiness + 0.06, 0, 1);
+      return true;
+    }
+    return false;
+  }
+
+  wakeUpNow() {
+    if (this.state === 'SLEEPING' || this.state === 'BELLY_BLISS') {
+      this.state = 'WAKING';
+      this.stateTimer = 0;
+      audio.playSigh();
+    }
+  }
+
+  triggerHappySpin() {
+    this.state = 'HAPPY_SPIN';
+    this.stateTimer = 0;
+    audio.playYip();
+    audio.playChime(0);
+    spawnSparkle(this.headWorld[0], this.headWorld[1] + 0.1, this.headWorld[2], [1.0, 0.92, 0.65], 12, 0.25);
+  }
+
+  registerLick(flavorIdx, pasteCol) {
+    audio.playLick(0.95);
+    world.happiness = clamp(world.happiness + 0.028, 0, 1);
+    world.fullness = clamp(world.fullness + 0.035, 0, 1);
+    world.licksSinceSmear++;
+    world.licksSinceDrink++;
+    this.happySquint = Math.max(this.happySquint, 0.65);
+
+    // Flavor-specific cute reactions
+    if (flavorIdx === 0) {
+      // Salmon pink: joyful fast helicopter tail!
+      this.tailSpeed = Math.max(this.tailSpeed, 14.0);
+    } else if (flavorIdx === 1) {
+      // Pumpkin gold: blissful cozy squint & gentle head tilt
+      this.happySquint = Math.max(this.happySquint, 0.95);
+      this.headTiltTarget = 0.22;
+    } else {
+      // Creamy chicken: excited double tail wag & bright eyes
+      this.tailSpeed = Math.max(this.tailSpeed, 12.5);
+      this.headTiltTarget = -0.18;
+    }
+
+    // Occasional cute paste dab on nose/cheek
+    if (world.licksSinceSmear >= 5 && this.smears.length < 3) {
+      world.licksSinceSmear = 0;
+      this.addSmear(pasteCol);
+    }
+
+    // Subtle sunlit sparkle of delight
+    if (Math.random() < 0.35) {
+      spawnSparkle(this.mouthWorld[0], this.mouthWorld[1] + 0.05, this.mouthWorld[2], [1.0, 0.95, 0.78], 2, 0.08);
+    }
+
+    // Milestone 1: Joyful spin!
+    if (!world.celebrated1 && world.fullness >= 0.36) {
+      world.celebrated1 = true;
+      setTimeout(() => {
+        if (!dragState.active && this.state === 'SITTING') this.triggerHappySpin();
+      }, 600);
+    }
+    // Milestone 2: Extra rainbow bloom + playful bounce!
+    if (!world.celebrated2 && world.fullness >= 0.72) {
+      world.celebrated2 = true;
+      audio.playChime(2);
+      spawnSparkle(0, 0.45, 0, [1.0, 0.90, 0.75], 14, 0.55);
+    }
+  }
+
+  update(dt, drag) {
+    this.stateTimer += dt;
+    this.isLicking = false;
+
+    // Natural blinking
+    this.blinkTimer -= dt;
+    if (this.blinkTimer <= 0) {
+      this.blinkTimer = 2.4 + Math.random() * 3.4;
+    }
+    const blinkWave = this.blinkTimer < 0.14 ? Math.sin((this.blinkTimer / 0.14) * Math.PI) : 0;
+    this.blink = Math.max(blinkWave, this.state === 'SLEEPING' ? 0.92 : 0);
+
+    // Decay transient expressions
+    this.happySquint = damp(this.happySquint, 0, 2.8, dt);
+    this.sniffPulse = damp(this.sniffPulse, 0, 6.0, dt);
+    this.petGlow = damp(this.petGlow, 0, 3.0, dt);
+    this.bellyKick = damp(this.bellyKick, 0, 3.2, dt);
+    this.earShake = damp(this.earShake, 0, 4.5, dt);
+
+    // Check if user is holding yummy food (open pouch or loaded spoon)
+    const holdingFood = drag.active && (
+      (drag.type === 'pouch' && drag.item.open && drag.item.fill > 0.02) ||
+      (drag.type === 'spoon' && drag.item.pasteAmt > 0.05)
+    );
+    const holdingCloth = drag.active && drag.type === 'cloth';
+
+    // Default posture goals
+    let goalSit = 1.0, goalLie = 0.0, goalBelly = 0.0, goalBow = 0.0, goalTall = 0.0;
+    let goalPitch = 0.0, goalTailSpd = 4.5 + world.happiness * 6.0, goalTailAmp = 0.28 + world.happiness * 0.25;
+    let lookGoal = [0.0, 0.52, 1.15];
+
+    // --- STATE MACHINE ---
+    if (this.state === 'SLEEPING') {
+      goalSit = 0; goalLie = 1.0;
+      goalTailSpd = 1.8; goalTailAmp = 0.10;
+      lookGoal = [0.0, 0.20, 0.50];
+      if (this.stateTimer > this.wakeDelay || drag.active) {
+        this.state = 'WAKING';
+        this.stateTimer = 0;
+      }
+    } else if (this.state === 'WAKING') {
+      goalSit = 0; goalLie = 0;
+      if (this.stateTimer < 0.85) {
+        // Adorable play-bow stretch!
+        goalBow = Math.sin(clamp(this.stateTimer / 0.85, 0, 1) * Math.PI);
+        this.jawOpen = damp(this.jawOpen, goalBow * 0.55, 8, dt);
+        goalTailSpd = 6.5;
+      } else if (this.stateTimer < 1.35) {
+        // Cute ear-flap head shake!
+        this.earShake = 1.0;
+        goalTailSpd = 9.0;
+      } else {
+        this.state = 'WALKING';
+        this.stateTimer = 0;
+        this.targetPos = [0.02, 0.02, -0.02];
+        this.targetYaw = 0.0;
+        audio.playYip();
+      }
+    } else if (this.state === 'WALKING') {
+      goalSit = 0; goalLie = 0;
+      const dx = this.targetPos[0] - this.pos[0];
+      const dz = this.targetPos[2] - this.pos[2];
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.03) {
+        const speed = 0.52;
+        this.pos[0] += (dx / dist) * Math.min(dist, speed * dt);
+        this.pos[2] += (dz / dist) * Math.min(dist, speed * dt);
+        this.pos[1] = damp(this.pos[1], 0.02, 8, dt);
+        const moveYaw = Math.atan2(dx, dz);
+        this.yaw += angleDiff(this.yaw, moveYaw) * Math.min(1, dt * 8);
+        this.walkPhase += dt * 11.5;
+        goalTailSpd = 10.5;
+        lookGoal = [this.targetPos[0], 0.25, this.targetPos[2] + 0.3];
+      } else {
+        this.yaw += angleDiff(this.yaw, this.targetYaw) * Math.min(1, dt * 8);
+        if (Math.abs(angleDiff(this.yaw, this.targetYaw)) < 0.14) {
+          if (this.nextStateAfterWalk) {
+            this.state = this.nextStateAfterWalk;
+            this.nextStateAfterWalk = null;
+          } else {
+            this.state = 'SITTING';
+          }
+          this.stateTimer = 0;
+        }
+      }
+    } else if (this.state === 'SITTING') {
+      goalSit = 1.0;
+      this.pos[1] = damp(this.pos[1], 0.02, 8, dt);
+      // Turn gently toward held item or camera
+      let aimX = 0.0, aimZ = 0.7;
+      if (drag.active && drag.item && drag.item.pos) {
+        aimX = drag.item.pos[0];
+        aimZ = drag.item.pos[2];
+        lookGoal = [drag.item.pos[0], drag.item.pos[1], drag.item.pos[2]];
+      } else if (world.idleTimer > 3.5) {
+        // Gentle wordless cue: look curiously at a closed pouch or bowl, then back at user!
+        const cuePhase = Math.sin(world.time * 0.9);
+        if (cuePhase > 0.25) {
+          const p = pouches[0];
+          lookGoal = [p.pos[0], p.pos[1] + 0.04, p.pos[2]];
+          this.headTiltTarget = 0.24;
+        } else {
+          lookGoal = [0.0, 0.56, 1.25];
+          this.headTiltTarget = -0.14;
+        }
+      } else {
+        // Subtle natural gaze
+        lookGoal = [Math.sin(world.time * 0.5) * 0.18, 0.48 + Math.cos(world.time * 0.7) * 0.06, 1.1];
+      }
+
+      const wantYaw = clamp(Math.atan2(aimX - this.pos[0], Math.max(0.25, aimZ - this.pos[2])), -0.75, 0.75);
+      this.yaw += angleDiff(this.yaw, wantYaw) * Math.min(1, dt * 5.0);
+
+      // Stand tall eagerly if yummy food is held high above her head!
+      if (holdingFood) {
+        const foodPos = drag.type === 'pouch' ? [drag.item.pos[0], drag.item.pos[1] + 0.07, drag.item.pos[2]] : drag.item.pos;
+        const dFood = V3.dist(this.mouthWorld, foodPos);
+        goalTailSpd = 12.5;
+        goalTailAmp = 0.48;
+        if (dFood < 0.36 && foodPos[1] > 0.45) {
+          goalTall = smoothstep(0.45, 0.58, foodPos[1]);
+          goalSit = 1.0 - goalTall * 0.85;
+        }
+        if (dFood < 0.38 && Math.random() < dt * 1.4 && !this.isLicking) {
+          this.sniffPulse = 1.0;
+          audio.playSniff();
+        }
+        // Check if food is right at her mouth -> LICK!
+        if (dFood < 0.20) {
+          this.isLicking = true;
+          this.lickIntensity = 1.0;
+          goalPitch = clamp((foodPos[1] - 0.36) * 1.5, -0.35, 0.45);
+        }
+      } else if (holdingCloth) {
+        const dCloth = V3.dist(this.noseWorld, cloth.pos);
+        if (dCloth < 0.22) {
+          this.happySquint = Math.max(this.happySquint, 0.85);
+          this.headTiltTarget = 0.18;
+          goalTailSpd = 9.5;
+        }
+      }
+
+      // Autonomous cute decisions when not dragging food!
+      if (!drag.active && this.stateTimer > 0.7) {
+        // 1. If there's yummy paste in the ceramic bowl, trot over and eat from bowl!
+        if (bowlBlobs.length > 0) {
+          this.targetPos = [FOOD_BOWL_POS[0] + 0.02, 0.02, FOOD_BOWL_POS[2] - 0.25];
+          this.targetYaw = 0.0;
+          this.nextStateAfterWalk = 'EATING_BOWL';
+          this.state = 'WALKING';
+          this.stateTimer = 0;
+        }
+        // 2. If thirsty after lots of licks, walk over for a refreshing drink!
+        else if (world.licksSinceDrink >= 14) {
+          world.licksSinceDrink = 0;
+          this.targetPos = [WATER_BOWL_POS[0] + 0.04, 0.02, WATER_BOWL_POS[2] - 0.24];
+          this.targetYaw = -0.15;
+          this.nextStateAfterWalk = 'DRINKING';
+          this.state = 'WALKING';
+          this.stateTimer = 0;
+        }
+        // 3. When happily full, roll onto her fluffy back for belly rubs!
+        else if (world.fullness >= 0.96 && !world.bellyBlissTriggered && this.stateTimer > 1.6) {
+          world.bellyBlissTriggered = true;
+          this.state = 'BELLY_BLISS';
+          this.stateTimer = 0;
+          audio.playSigh();
+          audio.playChime(1);
+          spawnSparkle(this.pos[0], 0.35, this.pos[2], [1.0, 0.92, 0.72], 14, 0.35);
+        }
+      }
+    } else if (this.state === 'EATING_BOWL') {
+      goalSit = 0.25;
+      goalPitch = -0.68;
+      goalTailSpd = 13.0;
+      goalTailAmp = 0.50;
+      lookGoal = [FOOD_BOWL_POS[0], FOOD_BOWL_POS[1] + 0.04, FOOD_BOWL_POS[2]];
+      this.isLicking = true;
+      this.lickIntensity = 0.95;
+
+      // Interrupt smoothly if child picks up a pouch or bounces the ball
+      if (holdingFood) {
+        this.state = 'SITTING';
+        this.stateTimer = 0;
+      } else if (bowlBlobs.length === 0) {
+        // Finished bowl! Step back nicely and sit happily
+        this.targetPos = [0.02, 0.02, -0.02];
+        this.targetYaw = 0.0;
+        this.nextStateAfterWalk = 'SITTING';
+        this.state = 'WALKING';
+        this.stateTimer = 0;
+        audio.playYip();
+      }
+    } else if (this.state === 'DRINKING') {
+      goalSit = 0.2;
+      goalPitch = -0.66;
+      goalTailSpd = 7.5;
+      lookGoal = [WATER_BOWL_POS[0], WATER_BOWL_POS[1] + 0.04, WATER_BOWL_POS[2]];
+      this.isLicking = true;
+      this.lickIntensity = 0.85;
+      if (this.stateTimer > 3.2 || holdingFood) {
+        this.earShake = 0.9;
+        this.targetPos = [0.02, 0.02, -0.02];
+        this.targetYaw = 0.0;
+        this.nextStateAfterWalk = 'SITTING';
+        this.state = 'WALKING';
+        this.stateTimer = 0;
+      }
+    } else if (this.state === 'PLAYING_BALL') {
+      goalSit = 0; goalLie = 0;
+      const dx = ball.pos[0] - this.pos[0];
+      const dz = ball.pos[2] - this.pos[2];
+      const dist = Math.hypot(dx, dz);
+      lookGoal = [ball.pos[0], ball.pos[1], ball.pos[2]];
+      goalTailSpd = 15.0;
+      goalTailAmp = 0.55;
+      if (dist > 0.22 && this.stateTimer < 4.5 && !holdingFood) {
+        const spd = 0.85;
+        this.pos[0] += (dx / dist) * Math.min(dist, spd * dt);
+        this.pos[2] += (dz / dist) * Math.min(dist, spd * dt);
+        this.yaw += angleDiff(this.yaw, Math.atan2(dx, dz)) * Math.min(1, dt * 11);
+        this.walkPhase += dt * 16.0;
+        // Cute playful bounce
+        this.pos[1] = 0.02 + Math.abs(Math.sin(this.walkPhase * 0.5)) * 0.045;
+      } else {
+        // Boop the ball happily back toward the center!
+        if (dist <= 0.25) {
+          const bx = -0.15 - ball.pos[0];
+          const bz = 0.10 - ball.pos[2];
+          const bl = Math.hypot(bx, bz) || 1;
+          ball.vel[0] = (bx / bl) * 0.85 + (Math.random() - 0.5) * 0.3;
+          ball.vel[1] = 0.72;
+          ball.vel[2] = (bz / bl) * 0.85;
+          audio.playBallBounce(true);
+          audio.playYip();
+          world.happiness = clamp(world.happiness + 0.08, 0, 1);
+          spawnSparkle(ball.pos[0], ball.pos[1] + 0.06, ball.pos[2], [1.0, 0.90, 0.82], 7, 0.14);
+        }
+        this.targetPos = [0.02, 0.02, -0.02];
+        this.targetYaw = 0.0;
+        this.nextStateAfterWalk = 'SITTING';
+        this.state = 'WALKING';
+        this.stateTimer = 0;
+      }
+    } else if (this.state === 'HAPPY_SPIN') {
+      goalSit = 0; goalLie = 0;
+      this.yaw += dt * 7.8;
+      this.walkPhase += dt * 18.0;
+      this.pos[1] = 0.02 + Math.abs(Math.sin(this.stateTimer * 9.5)) * 0.06;
+      goalTailSpd = 16.0;
+      goalTailAmp = 0.6;
+      this.happySquint = 0.85;
+      if (this.stateTimer > 0.92) {
+        this.pos[1] = 0.02;
+        this.state = 'SITTING';
+        this.stateTimer = 0;
+      }
+    } else if (this.state === 'BELLY_BLISS') {
+      goalSit = 0; goalLie = 0.85; goalBelly = 1.0;
+      this.happySquint = Math.max(this.happySquint, 0.78);
+      goalTailSpd = 5.5 + this.bellyKick * 8.0;
+      goalTailAmp = 0.35;
+      lookGoal = [0.0, 0.65, 1.1];
+      // Wake up gently if child holds food or taps ball, or after cozy cuddle time
+      if (holdingFood || this.stateTimer > 14.0) {
+        world.fullness = 0.25;
+        world.bellyBlissTriggered = false;
+        this.state = 'WAKING';
+        this.stateTimer = 0;
+      }
+    }
+
+    // Smoothly damp all posture values
+    this.sitAmount = damp(this.sitAmount, goalSit, 6.5, dt);
+    this.lieAmount = damp(this.lieAmount, goalLie, 5.5, dt);
+    this.bellyRoll = damp(this.bellyRoll, goalBelly, 4.5, dt);
+    this.stretchBow = damp(this.stretchBow, goalBow, 7.0, dt);
+    this.standTall = damp(this.standTall, goalTall, 6.5, dt);
+    this.bodyPitch = damp(this.bodyPitch, goalPitch, 7.5, dt);
+
+    // Tail wave speed & amplitude
+    this.tailSpeed = damp(this.tailSpeed, goalTailSpd, 5.0, dt);
+    this.tailAmp = damp(this.tailAmp, goalTailAmp, 5.0, dt);
+    this.tailPhase += dt * this.tailSpeed;
+
+    // Rhythmic Realistic Licking Kinematics!
+    if (this.isLicking) {
+      const prevCycle = Math.floor(this.lickPhase / (Math.PI * 2));
+      this.lickPhase += dt * 16.5;
+      const curCycle = Math.floor(this.lickPhase / (Math.PI * 2));
+      const s = Math.sin(this.lickPhase);
+      const extend = Math.max(0, s);
+      this.tongueOut = damp(this.tongueOut, extend * this.lickIntensity, 28, dt);
+      this.tongueCurl = Math.max(0, Math.sin(this.lickPhase - 0.55));
+      this.jawOpen = damp(this.jawOpen, 0.16 + extend * 0.28, 22, dt);
+
+      // Fire lick event at the peak of each tongue flick!
+      if (curCycle > prevCycle) {
+        if (this.state === 'DRINKING') {
+          audio.playWaterLap();
+          spawnWaterRipple((Math.random() - 0.5) * 0.03, (Math.random() - 0.5) * 0.03, 0.9);
+          spawnSparkle(WATER_BOWL_POS[0], WATER_BOWL_POS[1] + 0.06, WATER_BOWL_POS[2], [0.85, 0.96, 1.0], 2, 0.05);
+        } else if (this.state === 'EATING_BOWL') {
+          if (bowlBlobs.length > 0) {
+            const top = bowlBlobs[bowlBlobs.length - 1];
+            top.scale -= 0.42;
+            this.registerLick(top.flavorIdx, top.color);
+            if (top.scale <= 0.15) bowlBlobs.pop();
+          }
+        } else if (drag.active && drag.type === 'pouch' && drag.item.open && drag.item.fill > 0.01) {
+          drag.item.fill = Math.max(0, drag.item.fill - 0.055);
+          drag.item.squeezePulse = 1.0;
+          this.registerLick(drag.item.id, drag.item.flavor.pasteCol);
+        } else if (drag.active && drag.type === 'spoon' && drag.item.pasteAmt > 0.02) {
+          drag.item.pasteAmt = Math.max(0, drag.item.pasteAmt - 0.28);
+          this.registerLick(0, spoon.pasteCol);
+        }
+      }
+    } else {
+      this.tongueOut = damp(this.tongueOut, 0, 12, dt);
+      this.tongueCurl = damp(this.tongueCurl, 0, 10, dt);
+      if (this.state !== 'WAKING') {
+        // Tiny happy pant when super joyful
+        const happyPant = (world.happiness > 0.65 && this.state === 'SITTING') ? 0.06 + Math.sin(world.time * 7.0) * 0.02 : 0.0;
+        this.jawOpen = damp(this.jawOpen, happyPant, 8, dt);
+      }
+    }
+
+    // Head look-at calculation in dog-local coordinates
+    V3.lerp(this.lookTarget, this.lookTarget, lookGoal, 1 - Math.exp(-8 * dt));
+    const dx = this.lookTarget[0] - this.headWorld[0];
+    const dy = this.lookTarget[1] - this.headWorld[1];
+    const dz = this.lookTarget[2] - this.headWorld[2];
+    const targetWorldYaw = Math.atan2(dx, dz);
+    const localYaw = clamp(angleDiff(this.yaw, targetWorldYaw), -0.82, 0.82);
+    const horizD = Math.hypot(dx, dz) || 0.01;
+    const localPitch = clamp(-Math.atan2(dy, horizD), -0.58, 0.62);
+
+    this.headYaw = damp(this.headYaw, localYaw, 9.0, dt);
+    const lickBob = this.isLicking ? Math.sin(this.lickPhase) * 0.08 : 0;
+    this.headPitch = damp(this.headPitch, localPitch + lickBob, 10.0, dt);
+    this.headTilt = damp(this.headTilt, this.headTiltTarget, 4.5, dt);
+    this.headTiltTarget = damp(this.headTiltTarget, 0, 0.9, dt);
+
+    // Secondary Spring-Damper Physics for Floppy Cavalier Ears!
+    const dHeadYaw = (this.headYaw - this.prevHeadYaw) / Math.max(dt, 0.005);
+    const dHeadPitch = (this.headPitch - this.prevHeadPitch) / Math.max(dt, 0.005);
+    this.prevHeadYaw = this.headYaw;
+    this.prevHeadPitch = this.headPitch;
+
+    const shakeForce = this.earShake * Math.sin(world.time * 34.0) * 18.0;
+    const earBreeze = Math.sin(world.time * 2.2) * 0.025;
+    // Left ear
+    const restZL = 0.16 + this.headTilt * 0.65 + (this.state === 'EATING_BOWL' ? 0.12 : 0) + this.bellyRoll * 0.65;
+    const forceZL = (restZL - this.earL.angleZ) * 42.0 - this.earL.velZ * 6.5 - dHeadYaw * 0.45 + shakeForce;
+    this.earL.velZ += forceZL * dt;
+    this.earL.angleZ = clamp(this.earL.angleZ + this.earL.velZ * dt, -0.35, 1.05);
+    const restXL = -this.headPitch * 0.72 + earBreeze;
+    this.earL.velX += ((restXL - this.earL.angleX) * 38.0 - this.earL.velX * 6.2 - dHeadPitch * 0.4) * dt;
+    this.earL.angleX = clamp(this.earL.angleX + this.earL.velX * dt, -0.75, 0.75);
+
+    // Right ear
+    const restZR = -0.16 + this.headTilt * 0.65 - (this.state === 'EATING_BOWL' ? 0.12 : 0) - this.bellyRoll * 0.65;
+    const forceZR = (restZR - this.earR.angleZ) * 42.0 - this.earR.velZ * 6.5 - dHeadYaw * 0.45 - shakeForce;
+    this.earR.velZ += forceZR * dt;
+    this.earR.angleZ = clamp(this.earR.angleZ + this.earR.velZ * dt, -1.05, 0.35);
+    const restXR = -this.headPitch * 0.72 - earBreeze;
+    this.earR.velX += ((restXR - this.earR.angleX) * 38.0 - this.earR.velX * 6.2 - dHeadPitch * 0.4) * dt;
+    this.earR.angleX = clamp(this.earR.angleX + this.earR.velX * dt, -0.75, 0.75);
+  }
+
+  // Emit all articulated draw calls for the Cavalier (used in both shadow & main pass!)
+  submitDrawCalls(pushDraw) {
+    const breath = Math.sin(world.time * 2.6) * 0.006;
+    const walkSin = Math.sin(this.walkPhase);
+    const walkCos = Math.cos(this.walkPhase);
+    const isMoving = this.state === 'WALKING' || this.state === 'PLAYING_BALL' || this.state === 'HAPPY_SPIN';
+    const stride = isMoving ? 0.42 : 0.0;
+
+    // Compute root transform
+    const mRoot = M4.create();
+    const baseHeight = lerp(0.24, 0.185, this.sitAmount);
+    const lieHeight = lerp(baseHeight, 0.095, this.lieAmount);
+    const tallBoost = this.standTall * 0.11;
+    M4.translate(mRoot, mRoot, this.pos[0], this.pos[1] + lieHeight + tallBoost, this.pos[2]);
+    M4.rotateY(mRoot, mRoot, this.yaw);
+
+    // Roll onto back/side for Belly Bliss!
+    if (this.bellyRoll > 0.001) {
+      M4.rotateZ(mRoot, mRoot, this.bellyRoll * 2.55);
+      M4.translate(mRoot, mRoot, 0, -this.bellyRoll * 0.03, 0);
+    }
+
+    // Torso pitch (sitting angles spine up, eating bows down, standing tall angles steep!)
+    const spinePitch = -this.sitAmount * 0.48 - this.standTall * 0.92 + this.stretchBow * 0.36 - this.bodyPitch * 0.42;
+    const mTorso = M4.create();
+    M4.copy(mTorso, mRoot);
+    M4.rotateX(mTorso, mTorso, spinePitch);
+
+    // Cache body center
+    V3.transformMat4(this.bodyWorld, [0, 0, 0], mTorso);
+
+    // 1. Torso
+    const mTorsoDraw = M4.create();
+    M4.scale(mTorsoDraw, mTorso, 1.0 + breath * 1.6, 1.0 + breath * 1.4, 1.0);
+    pushDraw(MESH.dogTorso, mTorsoDraw, TEX.fur, [1, 1, 1, 1], [0.72, 0, 0.52, 1.0], 1, 2);
+
+    // 2. Fluffy White Chest Ruff
+    const mRuff = M4.create();
+    M4.translate(mRuff, mTorso, 0, 0.005, 0.148);
+    M4.scale(mRuff, mRuff, 1.0 + breath * 2.0, 1.05, 0.95);
+    pushDraw(MESH.dogRuff, mRuff, TEX.fur, [1, 1, 1, 1], [0.74, 0, 0.62, 1.0], 1, 6);
+
+    // 3. Neck + Cute Blush Ribbon Collar & Golden Bell -> Head
+    const mNeck = M4.create();
+    M4.translate(mNeck, mTorso, 0, 0.062, 0.145);
+    M4.rotateX(mNeck, mNeck, -spinePitch * 0.55 - 0.18 + this.bodyPitch * 0.52);
+    pushDraw(MESH.dogNeck, mNeck, TEX.fur, [1, 1, 1, 1], [0.72, 0, 0.52, 1.0], 1, 6);
+
+    const mCollar = M4.create();
+    M4.translate(mCollar, mNeck, 0, 0.005, 0.004);
+    M4.rotateX(mCollar, mCollar, 0.25);
+    pushDraw(MESH.collar, mCollar, TEX.fabric, [0.92, 0.54, 0.58, 1], [0.62, 0, 0.3, 2.0], 0, 0);
+
+    const mBell = M4.create();
+    const bellSwing = Math.sin(world.time * 12.0) * (this.earShake * 0.35 + (isMoving ? 0.2 : 0.03));
+    M4.translate(mBell, mCollar, Math.sin(bellSwing) * 0.012, -0.016, 0.088);
+    pushDraw(MESH.bell, mBell, TEX.white, [0.96, 0.80, 0.40, 1], [0.16, 0.88, 0, 1], 0, 0);
+
+    const mHead = M4.create();
+    M4.translate(mHead, mNeck, 0, 0.072, 0.045);
+    M4.rotateY(mHead, mHead, this.headYaw);
+    M4.rotateX(mHead, mHead, this.headPitch - spinePitch * 0.35 - this.bodyPitch * 0.25);
+    M4.rotateZ(mHead, mHead, this.headTilt);
+
+    // Cache world positions for mouth, head, nose
+    V3.transformMat4(this.headWorld, [0, 0.01, 0.02], mHead);
+    V3.transformMat4(this.noseWorld, [0, -0.004, 0.162], mHead);
+    V3.transformMat4(this.mouthWorld, [0, -0.036, 0.156], mHead);
+
+    // Head main skull + snout
+    const sniffScale = 1.0 + Math.sin(world.time * 28.0) * this.sniffPulse * 0.02;
+    const mHeadDraw = M4.create();
+    M4.scale(mHeadDraw, mHead, 1, 1, sniffScale);
+    pushDraw(MESH.dogHead, mHeadDraw, TEX.fur, [1, 1, 1, 1], [0.68, 0, 0.55, 1.0], 1, 1);
+
+    // Glossy Dark Wet Nose
+    const mNose = M4.create();
+    M4.translate(mNose, mHead, 0, -0.004, 0.156 + this.sniffPulse * 0.003);
+    M4.rotateX(mNose, mNose, 0.10 + Math.sin(world.time * 26.0) * this.sniffPulse * 0.08);
+    pushDraw(MESH.dogNose, mNose, TEX.white, [0.09, 0.06, 0.05, 1], [0.14, 0.02, 0.0, 1], 3, 11);
+
+    // Lower Jaw
+    const mJaw = M4.create();
+    M4.translate(mJaw, mHead, 0, -0.036, 0.072);
+    M4.rotateX(mJaw, mJaw, 0.06 + this.jawOpen * 0.72);
+    M4.translate(mJaw, mJaw, 0, -0.008, 0.034);
+    pushDraw(MESH.dogJaw, mJaw, TEX.fur, [0.96, 0.92, 0.87, 1], [0.74, 0, 0.45, 1], 1, 6);
+
+    // Articulated Wet Pink Tongue (4 curved segments!)
+    if (this.tongueOut > 0.01 || this.jawOpen > 0.10) {
+      const tLen = 0.018 + this.tongueOut * 0.062;
+      const mT = M4.create();
+      M4.translate(mT, mHead, 0, -0.038, 0.104);
+      M4.rotateX(mT, mT, 0.25 + this.jawOpen * 0.25 - this.tongueOut * 0.35);
+      for (let seg = 0; seg < 4; seg++) {
+        const frac = seg / 3;
+        M4.translate(mT, mT, 0, 0, tLen * 0.28);
+        // Upward curl at the tip while licking!
+        M4.rotateX(mT, mT, -0.18 - this.tongueCurl * 0.34 * frac);
+        const mSeg = M4.create();
+        const w = lerp(1.0, 0.76, frac);
+        M4.scale(mSeg, mT, w, 1.0, 1.0 + this.tongueOut * 0.35);
+        pushDraw(MESH.dogTongueSeg, mSeg, TEX.white, [0.94, 0.46, 0.50, 1], [0.14, 0, 0.1, 1], 3, 12);
+      }
+    }
+
+    // Liquid Realistic Eyes + Expressive Eyelids (Blink + Happy ^_^ Squint)
+    for (const side of [-1, 1]) {
+      const mEyeSocket = M4.create();
+      M4.translate(mEyeSocket, mHead, side * 0.046, 0.017, 0.089);
+      M4.rotateY(mEyeSocket, mEyeSocket, side * 0.18);
+
+      const mEye = M4.create();
+      M4.copy(mEye, mEyeSocket);
+      // Subtle extra eyeball tracking for soulful aliveness!
+      M4.rotateY(mEye, mEye, clamp(this.headYaw * 0.18, -0.14, 0.14));
+      M4.rotateX(mEye, mEye, clamp(this.headPitch * 0.16, -0.12, 0.12));
+      pushDraw(MESH.dogEye, mEye, TEX.white, [1, 1, 1, 1], [0.04, 0, 0, 1], 2, 0);
+
+      // Upper eyelid: negative rotateX opens wide back (-Z), positive sweeps smoothly down over front (+Z)!
+      const closeAmt = clamp(this.blink * 0.95 + this.happySquint * 0.42, 0, 1);
+      const mLidTop = M4.create();
+      M4.copy(mLidTop, mEyeSocket);
+      M4.rotateX(mLidTop, mLidTop, lerp(-0.92, 0.36, closeAmt));
+      pushDraw(MESH.eyelid, mLidTop, TEX.fur, [0.52, 0.22, 0.09, 1], [0.68, 0, 0.35, 1], 0, 0);
+
+      // Lower smiling cheek-lid: rises up from bottom (+Z) when happy-squinting!
+      if (this.happySquint > 0.04) {
+        const mLidBot = M4.create();
+        M4.copy(mLidBot, mEyeSocket);
+        M4.rotateX(mLidBot, mLidBot, Math.PI + lerp(0.88, -0.22, this.happySquint));
+        pushDraw(MESH.eyelid, mLidBot, TEX.fur, [0.56, 0.25, 0.11, 1], [0.68, 0, 0.35, 1], 0, 0);
+      }
+    }
+
+    // Long Wavy Feathered Blenheim Ears (Secondary Spring Physics!)
+    for (const side of [-1, 1]) {
+      const ear = side < 0 ? this.earL : this.earR;
+      const mEar = M4.create();
+      M4.translate(mEar, mHead, side * 0.092, 0.042, -0.008);
+      M4.rotateY(mEar, mEar, side * 0.14);
+      M4.rotateZ(mEar, mEar, ear.angleZ);
+      M4.rotateX(mEar, mEar, ear.angleX);
+      pushDraw(MESH.dogEar, mEar, TEX.fur, [1, 1, 1, 1], [0.56, 0, 0.65, 1.0], 1, 3);
+    }
+
+    // Cute Glossy Paste Smears on Nose / Cheeks!
+    for (const sm of this.smears) {
+      const mSm = M4.create();
+      M4.translate(mSm, mHead, sm.local[0], sm.local[1], sm.local[2]);
+      const sc = sm.size / 0.020;
+      M4.scale(mSm, mSm, sc, sc * 0.72, sc * 0.85);
+      pushDraw(MESH.pasteBlob, mSm, TEX.white, [sm.col[0], sm.col[1], sm.col[2], 1], [0.12, 0, 0, 1], 3, 10);
+    }
+
+    // 4. Articulated Front Legs & Plush Paws (remember: negative rotateX swings leg FORWARD +Z!)
+    for (const side of [-1, 1]) {
+      const phase = side < 0 ? walkSin : -walkSin;
+      const mSh = M4.create();
+      M4.translate(mSh, mTorso, side * 0.072, -0.032, 0.118);
+      let upperAng = -spinePitch * 0.85 + phase * stride;
+      let lowerAng = Math.max(0, phase * stride * 0.55);
+      if (this.standTall > 0.05) {
+        // Cute bent begging front paws lifted in front of chest!
+        upperAng = lerp(upperAng, -0.68 + Math.sin(world.time * 9.0 + side) * 0.12, this.standTall);
+        lowerAng = lerp(lowerAng, 1.25, this.standTall);
+      }
+      if (this.lieAmount > 0.05) {
+        // Stretched cozy forward when curled, or relaxed up during belly bliss!
+        upperAng = lerp(upperAng, -1.18 + this.bellyRoll * 0.55, this.lieAmount);
+        lowerAng = lerp(lowerAng, 0.28 + this.bellyRoll * 0.85, this.lieAmount);
+      }
+      if (this.stretchBow > 0.05) {
+        // Adorable play-bow front paws stretched forward!
+        upperAng = lerp(upperAng, -1.02, this.stretchBow);
+        lowerAng = lerp(lowerAng, 0.18, this.stretchBow);
+      }
+      M4.rotateX(mSh, mSh, upperAng);
+      pushDraw(MESH.dogLegUpper, mSh, TEX.fur, [1, 1, 1, 1], [0.74, 0, 0.48, 1], 1, 5);
+
+      const mLo = M4.create();
+      M4.translate(mLo, mSh, 0, -0.105, 0);
+      M4.rotateX(mLo, mLo, lowerAng);
+      pushDraw(MESH.dogLegLower, mLo, TEX.fur, [1, 1, 1, 1], [0.74, 0, 0.48, 1], 1, 5);
+
+      const mPaw = M4.create();
+      M4.translate(mPaw, mLo, 0, -0.095, 0.014);
+      M4.rotateX(mPaw, mPaw, -(upperAng + lowerAng + spinePitch) * (1 - this.standTall) * (1 - this.bellyRoll));
+      pushDraw(MESH.dogPaw, mPaw, TEX.fur, [1, 1, 1, 1], [0.74, 0, 0.45, 1], 1, 6);
+    }
+
+    // 5. Articulated Hind Legs & Plush Paws (with adorable belly-rub kick!)
+    for (const side of [-1, 1]) {
+      const phase = side < 0 ? -walkSin : walkSin;
+      const mHip = M4.create();
+      M4.translate(mHip, mTorso, side * 0.075, -0.025, -0.128);
+      const kick = (side > 0 && this.bellyKick > 0.01) ? Math.sin(world.time * 22.0) * 0.42 * this.bellyKick : 0;
+      let upperAng = -spinePitch * 0.75 + 0.12 + phase * stride;
+      let lowerAng = -0.22 - Math.max(0, -phase * stride * 0.45);
+      if (this.sitAmount > 0.02) {
+        // Seated tucked thighs forward (-X) and shins tucked neatly!
+        upperAng = lerp(upperAng, -1.16, this.sitAmount);
+        lowerAng = lerp(lowerAng, 0.78, this.sitAmount);
+      }
+      if (this.lieAmount > 0.02) {
+        upperAng = lerp(upperAng, -1.05 + this.bellyRoll * 0.62 + kick, this.lieAmount);
+        lowerAng = lerp(lowerAng, 0.85 - kick * 0.65, this.lieAmount);
+      }
+      M4.rotateX(mHip, mHip, upperAng);
+      M4.rotateZ(mHip, mHip, side * (this.sitAmount * 0.18 + this.bellyRoll * 0.34));
+      pushDraw(MESH.dogLegUpper, mHip, TEX.fur, [1, 1, 1, 1], [0.74, 0, 0.48, 1], 1, 5);
+
+      const mLo = M4.create();
+      M4.translate(mLo, mHip, 0, -0.105, 0);
+      M4.rotateX(mLo, mLo, lowerAng);
+      pushDraw(MESH.dogLegLower, mLo, TEX.fur, [1, 1, 1, 1], [0.74, 0, 0.48, 1], 1, 5);
+
+      const mPaw = M4.create();
+      M4.translate(mPaw, mLo, 0, -0.095, 0.014);
+      M4.rotateX(mPaw, mPaw, -(upperAng + lowerAng + spinePitch) * (1 - this.bellyRoll));
+      pushDraw(MESH.dogPaw, mPaw, TEX.fur, [1, 1, 1, 1], [0.74, 0, 0.45, 1], 1, 6);
+    }
+
+    // 6. Articulated Plumed Tail (4 Wave-Propagating Segments!)
+    const mTail = M4.create();
+    M4.translate(mTail, mTorso, 0, 0.045, -0.185);
+    M4.rotateX(mTail, mTail, -0.55 + this.sitAmount * 0.35);
+    for (let s = 0; s < 4; s++) {
+      const wag = Math.sin(this.tailPhase - s * 0.52) * this.tailAmp * (0.65 + s * 0.32);
+      M4.rotateZ(mTail, mTail, wag * 0.55);
+      M4.rotateX(mTail, mTail, 0.18);
+      const mTSeg = M4.create();
+      const plumeScale = 1.0 + Math.sin((s / 3) * Math.PI * 0.85) * 0.45;
+      M4.scale(mTSeg, mTail, plumeScale * 0.88, 1.0, plumeScale);
+      pushDraw(MESH.dogTailSeg, mTSeg, TEX.fur, [1, 1, 1, 1], [0.70, 0, 0.65, 1], 1, 4);
+      M4.translate(mTail, mTail, 0, 0.062, 0);
+    }
+  }
+}
+
+const dog = new CavalierDog();
+
+// ============================================================================
+// 10. CAMERA, RAYCASTING & TACTILE POINTER INTERACTION (Tap & Drag Only!)
+// ============================================================================
+const cam = {
+  pos: V3.create(0.0, 0.72, 1.38),
+  target: V3.create(0.0, 0.24, -0.05),
+  fov: 38 * Math.PI / 180,
+  proj: M4.create(),
+  view: M4.create(),
+  vp: M4.create(),
+  invVP: M4.create()
+};
+
+function updateCamera(dt) {
+  const aspect = canvas.width / Math.max(1, canvas.height);
+  // Gracefully widen distance on portrait phones/tablets so the entire tray + dog + window fit cleanly!
+  const portraitPad = aspect < 1.05 ? (1.05 - aspect) * 0.95 : 0;
+  const baseZ = 1.38 + portraitPad * 0.95;
+  const baseY = 0.72 + portraitPad * 0.34;
+  cam.fov = (aspect < 0.85 ? 43 : 38) * Math.PI / 180;
+
+  world.camOffset[0] = damp(world.camOffset[0], world.camOffsetTarget[0], 4.5, dt);
+  world.camOffset[1] = damp(world.camOffset[1], world.camOffsetTarget[1], 4.5, dt);
+  // Gentle automatic return to ideal warm framing
+  if (!dragState.active || dragState.type !== 'bg') {
+    world.camOffsetTarget[0] = damp(world.camOffsetTarget[0], 0, 1.2, dt);
+    world.camOffsetTarget[1] = damp(world.camOffsetTarget[1], 0, 1.2, dt);
+  }
+
+  // Subtle living breath sway
+  const bx = Math.sin(world.time * 0.35) * 0.012;
+  const by = Math.cos(world.time * 0.45) * 0.008;
+
+  V3.set(cam.pos, world.camOffset[0] + bx, baseY + world.camOffset[1] + by, baseZ);
+  V3.set(cam.target, 0.0, 0.24 - portraitPad * 0.04, -0.02);
+
+  M4.perspective(cam.proj, cam.fov, aspect, 0.08, 14.0);
+  M4.lookAt(cam.view, cam.pos, cam.target, [0, 1, 0]);
+  M4.mul(cam.vp, cam.proj, cam.view);
+  M4.invert(cam.invVP, cam.vp);
+}
+
+function screenToRay(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = 1 - ((clientY - rect.top) / rect.height) * 2;
+  const near = V3.transformMat4(V3.create(), [nx, ny, -1], cam.invVP);
+  const far = V3.transformMat4(V3.create(), [nx, ny, 1], cam.invVP);
+  const dir = V3.norm(V3.create(), V3.sub(V3.create(), far, near));
+  return { orig: near, dir };
+}
+
+function raySphereHit(ray, center, radius) {
+  const oc = V3.sub(V3.create(), ray.orig, center);
+  const b = V3.dot(oc, ray.dir);
+  const c = V3.dot(oc, oc) - radius * radius;
+  const disc = b * b - c;
+  if (disc < 0) return -1;
+  const t = -b - Math.sqrt(disc);
+  return t > 0 ? t : -1;
+}
+
+function rayPlaneZ(ray, planeZ) {
+  if (Math.abs(ray.dir[2]) < 0.0001) return null;
+  const t = (planeZ - ray.orig[2]) / ray.dir[2];
+  if (t <= 0) return null;
+  return [ray.orig[0] + ray.dir[0] * t, ray.orig[1] + ray.dir[1] * t, planeZ];
+}
+
+function rayPlaneY(ray, planeY) {
+  if (Math.abs(ray.dir[1]) < 0.0001) return null;
+  const t = (planeY - ray.orig[1]) / ray.dir[1];
+  if (t <= 0) return null;
+  return [ray.orig[0] + ray.dir[0] * t, planeY, ray.orig[2] + ray.dir[2] * t];
+}
+
+function refillPouches() {
+  let didAny = false;
+  for (const p of pouches) {
+    if (p.fill < 0.92 || p.open) {
+      p.fill = 1.0;
+      p.open = false;
+      p.openAnim = 0;
+      p.popBounce = 1.0;
+      didAny = true;
+    }
+  }
+  if (!didAny) {
+    pouches.forEach(p => { p.popBounce = 0.6; });
+  }
+  audio.playPouchOpen();
+  audio.playChime(-1);
+  spawnSparkle(0.35, 0.18, 0.40, [1.0, 0.95, 0.78], 10, 0.25);
+}
+
+const dragState = {
+  active: false,
+  pointerId: null,
+  type: null,      // 'pouch', 'spoon', 'cloth', 'ball', 'dog', 'bg'
+  item: null,
+  startX: 0,
+  startY: 0,
+  lastX: 0,
+  lastY: 0,
+  movedDist: 0,
+  squeezeAccum: 0,
+  petAccum: 0,
+  wipeAccum: 0
+};
+
+function pickTarget(ray) {
+  const hits = [];
+  const test = (type, item, center, r, priority = 0) => {
+    const t = raySphereHit(ray, center, r);
+    if (t > 0) hits.push({ type, item, t: t - priority * 0.12 });
+  };
+
+  // Generous hit volumes for 5-year-old fingers!
+  for (const p of pouches) test('pouch', p, p.pos, 0.085, 2.0);
+  test('spoon', spoon, spoon.pos, 0.085, 2.0);
+  test('cloth', cloth, cloth.pos, 0.095, 1.8);
+  test('ball', ball, ball.pos, 0.095, 1.8);
+  test('basket', null, [BASKET_POS[0], BASKET_POS[1] + 0.08, BASKET_POS[2]], 0.16, 1.2);
+  test('foodBowl', null, [FOOD_BOWL_POS[0], FOOD_BOWL_POS[1] + 0.04, FOOD_BOWL_POS[2]], 0.13, 1.0);
+  test('waterBowl', null, [WATER_BOWL_POS[0], WATER_BOWL_POS[1] + 0.04, WATER_BOWL_POS[2]], 0.12, 1.0);
+
+  // Dog head & body
+  test('dog', 'head', dog.headWorld, 0.165, 1.5);
+  test('dog', 'body', dog.bodyWorld, 0.21, 1.2);
+
+  // Potted Sunlit Houseplant & Flower Prism Vase on Windowsill
+  test('plant', null, [0.46, 0.62, -1.46], 0.20, 0.5);
+  test('vase', null, [-0.88, 0.52, -1.48], 0.16, 0.5);
+
+  // Curtains left & right of window
+  test('curtain', -1, [-1.18, 0.95, -1.48], 0.34, 0.3);
+  test('curtain', 1, [0.64, 0.95, -1.48], 0.34, 0.3);
+
+  // Sunlit Post-Rain Window
+  const wp = rayPlaneZ(ray, -1.58);
+  if (wp && wp[0] > -1.05 && wp[0] < 0.55 && wp[1] > 0.35 && wp[1] < 1.65) {
+    hits.push({ type: 'window', item: wp, t: 3.5 });
+  }
+
+  hits.sort((a, b) => a.t - b.t);
+  return hits[0] || null;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  audio.unlock();
+  world.idleTimer = 0;
+
+  const ray = screenToRay(e.clientX, e.clientY);
+  const hit = pickTarget(ray);
+
+  dragState.active = true;
+  dragState.pointerId = e.pointerId;
+  dragState.startX = dragState.lastX = e.clientX;
+  dragState.startY = dragState.lastY = e.clientY;
+  dragState.movedDist = 0;
+  dragState.squeezeAccum = 0;
+  dragState.petAccum = 0;
+  dragState.wipeAccum = 0;
+  canvas.setPointerCapture(e.pointerId);
+
+  if (!hit) {
+    dragState.type = 'bg';
+    dragState.item = null;
+    return;
+  }
+
+  if (hit.type === 'pouch') {
+    const p = hit.item;
+    if (p.fill <= 0.02) {
+      refillPouches();
+      dragState.type = 'bg';
+      return;
+    }
+    if (!p.open) {
+      p.open = true;
+      p.popBounce = 0.85;
+      audio.playPouchOpen();
+      spawnSparkle(p.pos[0], p.pos[1] + 0.08, p.pos[2], p.flavor.accent, 6, 0.07);
+    }
+    dog.wakeUpNow();
+    dragState.type = 'pouch';
+    dragState.item = p;
+    canvas.classList.add('grabbing');
+  } else if (hit.type === 'spoon') {
+    dog.wakeUpNow();
+    dragState.type = 'spoon';
+    dragState.item = spoon;
+    audio.playCeramicClink();
+    canvas.classList.add('grabbing');
+  } else if (hit.type === 'cloth') {
+    dragState.type = 'cloth';
+    dragState.item = cloth;
+    audio.playWipe();
+    canvas.classList.add('grabbing');
+  } else if (hit.type === 'ball') {
+    dog.wakeUpNow();
+    dragState.type = 'ball';
+    dragState.item = ball;
+    audio.playBallBounce(true);
+    canvas.classList.add('grabbing');
+  } else if (hit.type === 'dog') {
+    dragState.type = 'dog';
+    dragState.item = hit.item;
+    if (dog.state === 'SLEEPING') {
+      dog.wakeUpNow();
+      audio.playYip();
+    } else if (dog.state === 'BELLY_BLISS') {
+      dog.bellyKick = 1.0;
+      dog.happySquint = 1.0;
+      audio.playSigh();
+      spawnSparkle(dog.bodyWorld[0], dog.bodyWorld[1] + 0.08, dog.bodyWorld[2], [1.0, 0.94, 0.72], 5, 0.16);
+    } else {
+      dog.happySquint = 0.95;
+      dog.petGlow = 1.0;
+      dog.headTiltTarget = (Math.random() > 0.5 ? 1 : -1) * 0.24;
+      dog.tailSpeed = 13.5;
+      audio.playSigh();
+      spawnSparkle(dog.headWorld[0], dog.headWorld[1] + 0.08, dog.headWorld[2], [1.0, 0.94, 0.74], 5, 0.12);
+    }
+  } else if (hit.type === 'basket') {
+    refillPouches();
+    dragState.type = null;
+  } else if (hit.type === 'waterBowl') {
+    spawnWaterRipple((Math.random() - 0.5) * 0.04, (Math.random() - 0.5) * 0.04, 1.15);
+    audio.playWaterPlink();
+    spawnSparkle(WATER_BOWL_POS[0], WATER_BOWL_POS[1] + 0.06, WATER_BOWL_POS[2], [0.82, 0.95, 1.0], 5, 0.08);
+    dragState.type = null;
+  } else if (hit.type === 'foodBowl') {
+    audio.playCeramicClink();
+    if (bowlBlobs.length > 0 && dog.state !== 'EATING_BOWL') {
+      dog.wakeUpNow();
+    }
+    dragState.type = null;
+  } else if (hit.type === 'window') {
+    world.rainSlideBoost = 1.0;
+    world.rainbowStrength = Math.min(1.0, world.rainbowStrength + 0.18);
+    audio.playWaterPlink();
+    audio.playChime(-1);
+    const wp = hit.item;
+    spawnSparkle(wp[0], wp[1], wp[2] + 0.08, [0.95, 0.98, 1.0], 8, 0.24);
+    dragState.type = null;
+  } else if (hit.type === 'curtain') {
+    world.curtainBreeze = 0.095;
+    audio.playChime(-1);
+    dragState.type = null;
+  } else if (hit.type === 'plant') {
+    world.plantShake = 1.0;
+    audio.playWaterPlink();
+    spawnSparkle(0.46, 0.65, -1.42, [0.85, 0.98, 0.88], 6, 0.16);
+    dragState.type = null;
+  } else if (hit.type === 'vase') {
+    world.rainbowStrength = 1.0;
+    audio.playChime(1);
+    spawnSparkle(-0.88, 0.58, -1.42, [1.0, 0.86, 0.92], 10, 0.18);
+    spawnSparkle(0.32, 0.06, 0.10, [0.96, 0.92, 1.0], 8, 0.22);
+    dragState.type = null;
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!dragState.active || e.pointerId !== dragState.pointerId) return;
+  e.preventDefault();
+  world.idleTimer = 0;
+
+  const dx = e.clientX - dragState.lastX;
+  const dy = e.clientY - dragState.lastY;
+  dragState.lastX = e.clientX;
+  dragState.lastY = e.clientY;
+  const step = Math.hypot(dx, dy);
+  dragState.movedDist += step;
+
+  const ray = screenToRay(e.clientX, e.clientY);
+
+  if (dragState.type === 'pouch' || dragState.type === 'spoon' || dragState.type === 'cloth') {
+    // Smart curved 3D workspace plane bridging tray (z=0.38) and dog's muzzle (z~0.14)!
+    const rect = canvas.getBoundingClientRect();
+    const normY = (e.clientY - rect.top) / rect.height; // 0 top .. 1 bottom
+    const planeZ = lerp(0.14, 0.42, smoothstep(0.28, 0.78, normY));
+    const pt = rayPlaneZ(ray, planeZ);
+    if (pt) {
+      const tx = clamp(pt[0], -0.62, 0.62);
+      const ty = clamp(pt[1], 0.08, 0.70);
+      const tz = clamp(pt[2], 0.08, 0.52);
+      const item = dragState.item;
+      item.pos[0] = lerp(item.pos[0], tx, 0.45);
+      item.pos[1] = lerp(item.pos[1], ty, 0.45);
+      item.pos[2] = lerp(item.pos[2], tz, 0.45);
+
+      // Magnetic cozy assist toward bowl or puppy's mouth!
+      if (dragState.type === 'pouch' && item.open && item.fill > 0.01) {
+        const dBowl = Math.hypot(item.pos[0] - FOOD_BOWL_POS[0], item.pos[2] - FOOD_BOWL_POS[2]);
+        const dMouth = V3.dist(item.pos, dog.mouthWorld);
+        if (dMouth < 0.24) {
+          // Gently nestle nozzle near puppy's mouth
+          item.pos[0] = lerp(item.pos[0], dog.mouthWorld[0] + 0.04, 0.14);
+          item.pos[1] = lerp(item.pos[1], dog.mouthWorld[1] - 0.03, 0.14);
+          item.pos[2] = lerp(item.pos[2], dog.mouthWorld[2] + 0.07, 0.18);
+        } else if (dBowl < 0.16 && item.pos[1] < 0.34) {
+          // Over the bowl: deposit creamy 3D paste swirls as finger moves!
+          dragState.squeezeAccum += step;
+          if (dragState.squeezeAccum > 14 && bowlBlobs.length < MAX_BOWL_BLOBS) {
+            dragState.squeezeAccum = 0;
+            depositBowlPaste(item);
+          }
+        }
+      } else if (dragState.type === 'spoon') {
+        const dBowl = Math.hypot(item.pos[0] - FOOD_BOWL_POS[0], item.pos[2] - FOOD_BOWL_POS[2]);
+        if (dBowl < 0.15 && item.pos[1] < 0.19 && bowlBlobs.length > 0 && spoon.pasteAmt < 0.95) {
+          // Scoop paste right out of the ceramic bowl!
+          const top = bowlBlobs[bowlBlobs.length - 1];
+          spoon.pasteAmt = Math.min(1.0, spoon.pasteAmt + 0.45);
+          // Blend spoon paste color with scooped dollop
+          for (let c = 0; c < 3; c++) {
+            spoon.pasteCol[c] = lerp(spoon.pasteCol[c], top.color[c], 0.65);
+          }
+          top.scale -= 0.48;
+          if (top.scale <= 0.15) bowlBlobs.pop();
+          audio.playCeramicClink();
+          audio.playSqueeze();
+          spawnSparkle(spoon.pos[0], spoon.pos[1] + 0.03, spoon.pos[2], [1.0, 0.95, 0.80], 4, 0.06);
+        }
+        // Also allow dipping spoon near an open pouch to load paste directly!
+        for (const p of pouches) {
+          if (p.open && p.fill > 0.02 && V3.dist(spoon.pos, [p.pos[0], p.pos[1] + 0.06, p.pos[2]]) < 0.11 && spoon.pasteAmt < 0.9) {
+            spoon.pasteAmt = 1.0;
+            spoon.pasteCol = [...p.flavor.pasteCol];
+            p.fill = Math.max(0, p.fill - 0.08);
+            p.squeezePulse = 1.0;
+            audio.playSqueeze();
+          }
+        }
+      } else if (dragState.type === 'cloth') {
+        cloth.wiggle = Math.sin(world.time * 18.0) * 0.15;
+        const dNose = V3.dist(cloth.pos, dog.noseWorld);
+        if (dNose < 0.22) {
+          dragState.wipeAccum += step;
+          dog.happySquint = Math.max(dog.happySquint, 0.95);
+          if (dragState.wipeAccum > 18) {
+            dragState.wipeAccum = 0;
+            audio.playWipe();
+            dog.wipeSmears(0.0055);
+          }
+        }
+      }
+    }
+  } else if (dragState.type === 'ball') {
+    const pt = rayPlaneY(ray, 0.11);
+    if (pt) {
+      const nx = clamp(pt[0], -0.82, 0.82);
+      const nz = clamp(pt[2], -0.68, 0.35);
+      ball.vel[0] = (nx - ball.pos[0]) * 14.0;
+      ball.vel[2] = (nz - ball.pos[2]) * 14.0;
+      ball.vel[1] = 0.25;
+      ball.pos[0] = lerp(ball.pos[0], nx, 0.45);
+      ball.pos[1] = 0.11;
+      ball.pos[2] = lerp(ball.pos[2], nz, 0.45);
+    }
+  } else if (dragState.type === 'dog') {
+    dragState.petAccum += step;
+    dog.happySquint = Math.max(dog.happySquint, 0.95);
+    dog.petGlow = 1.0;
+    dog.tailSpeed = Math.max(dog.tailSpeed, 13.5);
+    if (dog.state === 'BELLY_BLISS') {
+      dog.bellyKick = 1.0;
+    } else {
+      dog.headTiltTarget = clamp((e.clientX - dragState.startX) * 0.004, -0.32, 0.32);
+    }
+    if (dragState.petAccum > 42) {
+      dragState.petAccum = 0;
+      world.happiness = clamp(world.happiness + 0.035, 0, 1);
+      audio.playSigh();
+      const sp = dog.state === 'BELLY_BLISS' ? dog.bodyWorld : dog.headWorld;
+      spawnSparkle(sp[0], sp[1] + 0.08, sp[2], [1.0, 0.94, 0.72], 4, 0.14);
+    }
+  } else if (dragState.type === 'bg') {
+    world.camOffsetTarget[0] = clamp(world.camOffsetTarget[0] - dx * 0.0009, -0.24, 0.24);
+    world.camOffsetTarget[1] = clamp(world.camOffsetTarget[1] + dy * 0.0006, -0.10, 0.14);
+  }
+});
+
+function depositBowlPaste(pouch) {
+  pouch.fill = Math.max(0, pouch.fill - 0.045);
+  pouch.squeezePulse = 1.0;
+  const idx = bowlBlobs.length;
+  const angle = idx * 1.15;
+  const rad = Math.min(0.056, (idx % 10) * 0.0062);
+  const layer = Math.floor(idx / 9);
+  bowlBlobs.push({
+    x: Math.cos(angle) * rad + (Math.random() - 0.5) * 0.012,
+    y: 0.024 + layer * 0.014,
+    z: Math.sin(angle) * rad + (Math.random() - 0.5) * 0.012,
+    scale: 0.82 + Math.random() * 0.35,
+    color: [...pouch.flavor.pasteCol],
+    flavorIdx: pouch.id
+  });
+  audio.playSqueeze();
+  spawnSparkle(FOOD_BOWL_POS[0], FOOD_BOWL_POS[1] + 0.06, FOOD_BOWL_POS[2], pouch.flavor.accent, 2, 0.06);
+}
+
+function endDrag(e) {
+  if (!dragState.active || (e.pointerId !== undefined && e.pointerId !== dragState.pointerId)) return;
+  canvas.classList.remove('grabbing');
+
+  if (dragState.type === 'ball') {
+    // Give the ball a cheerful gentle bounce if tapped without big drag!
+    if (dragState.movedDist < 16) {
+      ball.vel[0] = (Math.random() - 0.5) * 1.1 + (ball.pos[0] < 0 ? 0.55 : -0.55);
+      ball.vel[1] = 1.05;
+      ball.vel[2] = -0.35 + (Math.random() - 0.5) * 0.4;
+      audio.playBallBounce(true);
+    } else {
+      ball.vel[1] = Math.max(ball.vel[1], 0.55);
+    }
+    if (dog.state === 'SITTING' || dog.state === 'WALKING') {
+      dog.state = 'PLAYING_BALL';
+      dog.stateTimer = 0;
+    }
+  } else if (dragState.type === 'pouch' && dragState.item && dragState.item.open && dragState.item.fill > 0.01) {
+    // If released right over the food bowl, squeeze one extra dollop!
+    const p = dragState.item;
+    if (Math.hypot(p.pos[0] - FOOD_BOWL_POS[0], p.pos[2] - FOOD_BOWL_POS[2]) < 0.16 && p.pos[1] < 0.32 && bowlBlobs.length < MAX_BOWL_BLOBS) {
+      depositBowlPaste(p);
+    }
+  } else if (dragState.type === 'dog' && dragState.movedDist < 14) {
+    // Quick friendly tap on puppy -> happy yip & spin if joyful!
+    if (dog.state === 'SITTING' && world.happiness > 0.45 && Math.random() < 0.45) {
+      dog.triggerHappySpin();
+    } else if (dog.state !== 'SLEEPING' && dog.state !== 'BELLY_BLISS') {
+      audio.playYip();
+      dog.earShake = 0.7;
+    }
+  }
+
+  dragState.active = false;
+  dragState.type = null;
+  dragState.item = null;
+  dragState.pointerId = null;
+}
+
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+// ============================================================================
+// 11. SIMULATION UPDATE LOOP (Physics, Pouches, Paste Ribbon, Sparkles)
+// ============================================================================
+function updateWorld(dt) {
+  world.time += dt;
+  world.idleTimer += dt;
+  audio.updateAmbient(dt);
+
+  // Decay interactive room effects gently
+  world.rainSlideBoost = damp(world.rainSlideBoost, 0, 1.4, dt);
+  world.curtainBreeze = damp(world.curtainBreeze, 0.026, 1.2, dt);
+  world.plantShake = damp(world.plantShake, 0, 3.2, dt);
+  world.rainbowStrength = damp(world.rainbowStrength, 0.16 + world.happiness * 0.84, 0.8, dt);
+
+  // Update Dog AI & Animation
+  dog.update(dt, dragState);
+
+  // Update Pouches (smooth spring return home, cap open animation, nozzle paste ribbon!)
+  for (const p of pouches) {
+    p.openAnim = damp(p.openAnim, p.open ? 1.0 : 0.0, 9.0, dt);
+    p.squeezePulse = damp(p.squeezePulse, 0, 8.0, dt);
+    p.popBounce = damp(p.popBounce, 0, 6.5, dt);
+
+    const isDragged = dragState.active && dragState.type === 'pouch' && dragState.item === p;
+    if (!isDragged) {
+      // Gentle bounce animation when idle cue invites attention
+      const cueWobble = (world.idleTimer > 4.0 && p.id === 0 && !p.open) ? Math.sin(world.time * 5.0) * 0.05 : 0;
+      p.pos[0] = damp(p.pos[0], p.home[0], 9.0, dt);
+      p.pos[1] = damp(p.pos[1], p.home[1] + Math.sin(p.popBounce * Math.PI) * 0.055, 9.0, dt);
+      p.pos[2] = damp(p.pos[2], p.home[2], 9.0, dt);
+      p.rot[0] = damp(p.rot[0], 0.16, 8.0, dt);
+      p.rot[1] = damp(p.rot[1], -0.22 - p.id * 0.12, 8.0, dt);
+      p.rot[2] = damp(p.rot[2], (p.id - 1) * -0.07 + cueWobble, 8.0, dt);
+    } else {
+      // Tilt gracefully toward dog's mouth or down toward the ceramic bowl!
+      const dBowl = Math.hypot(p.pos[0] - FOOD_BOWL_POS[0], p.pos[2] - FOOD_BOWL_POS[2]);
+      const dMouth = V3.dist(p.pos, dog.mouthWorld);
+      if (dMouth < 0.28) {
+        p.rot[0] = damp(p.rot[0], -0.42, 10.0, dt);
+        p.rot[1] = damp(p.rot[1], 0.15, 10.0, dt);
+        p.rot[2] = damp(p.rot[2], 0.35, 10.0, dt);
+        // Continuous creamy paste bead extrusion from exact nozzle tip toward puppy's tongue!
+        if (p.open && p.fill > 0.01 && Math.random() < dt * 20.0) {
+          pasteRibbon.push({
+            pos: [...p.nozzleWorld],
+            vel: [
+              (dog.mouthWorld[0] - p.nozzleWorld[0]) * 3.8,
+              (dog.mouthWorld[1] - p.nozzleWorld[1]) * 3.8,
+              (dog.mouthWorld[2] - p.nozzleWorld[2]) * 3.8
+            ],
+            col: [...p.flavor.pasteCol],
+            r: 0.014,
+            age: 0
+          });
+        }
+      } else if (dBowl < 0.18 && p.pos[1] < 0.34) {
+        // Tilt cleanly downward over the ceramic bowl to squeeze glossy swirls!
+        p.rot[0] = damp(p.rot[0], -2.35, 10.0, dt);
+        p.rot[1] = damp(p.rot[1], 0.0, 10.0, dt);
+        p.rot[2] = damp(p.rot[2], 0.28, 10.0, dt);
+        if (p.open && p.fill > 0.01 && bowlBlobs.length < MAX_BOWL_BLOBS) {
+          // Also gently squeeze even if child holds pouch steadily over bowl!
+          dragState.squeezeAccum += dt * 26.0;
+          if (dragState.squeezeAccum > 14) {
+            dragState.squeezeAccum = 0;
+            depositBowlPaste(p);
+          }
+          if (Math.random() < dt * 22.0) {
+            pasteRibbon.push({
+              pos: [...p.nozzleWorld],
+              vel: [(FOOD_BOWL_POS[0] - p.nozzleWorld[0]) * 2.5, -0.32, (FOOD_BOWL_POS[2] - p.nozzleWorld[2]) * 2.5],
+              col: [...p.flavor.pasteCol],
+              r: 0.014,
+              age: 0
+            });
+          }
+        }
+      } else {
+        p.rot[0] = damp(p.rot[0], 0.05, 8.0, dt);
+        p.rot[1] = damp(p.rot[1], 0.0, 8.0, dt);
+        p.rot[2] = damp(p.rot[2], 0.10, 8.0, dt);
+      }
+    }
+  }
+
+  // Update Active Paste Ribbon droplets
+  for (let i = pasteRibbon.length - 1; i >= 0; i--) {
+    const pr = pasteRibbon[i];
+    pr.age += dt;
+    pr.pos[0] += pr.vel[0] * dt;
+    pr.pos[1] += pr.vel[1] * dt;
+    pr.pos[2] += pr.vel[2] * dt;
+    if (pr.age > 0.22) pasteRibbon.splice(i, 1);
+  }
+
+  // Update Spoon
+  const spoonDragged = dragState.active && dragState.type === 'spoon';
+  if (!spoonDragged) {
+    spoon.pos[0] = damp(spoon.pos[0], spoon.home[0], 9.0, dt);
+    spoon.pos[1] = damp(spoon.pos[1], spoon.home[1], 9.0, dt);
+    spoon.pos[2] = damp(spoon.pos[2], spoon.home[2], 9.0, dt);
+    spoon.rot[0] = damp(spoon.rot[0], 0.05, 8.0, dt);
+    spoon.rot[1] = damp(spoon.rot[1], 0.52, 8.0, dt);
+    spoon.rot[2] = damp(spoon.rot[2], 0.0, 8.0, dt);
+  } else {
+    spoon.rot[0] = damp(spoon.rot[0], 0.14, 10.0, dt);
+    spoon.rot[1] = damp(spoon.rot[1], -0.25, 10.0, dt);
+    spoon.rot[2] = damp(spoon.rot[2], 0.05, 10.0, dt);
+  }
+
+  // Update Soft Linen Cloth
+  const clothDragged = dragState.active && dragState.type === 'cloth';
+  if (!clothDragged) {
+    cloth.pos[0] = damp(cloth.pos[0], cloth.home[0], 9.0, dt);
+    cloth.pos[1] = damp(cloth.pos[1], cloth.home[1], 9.0, dt);
+    cloth.pos[2] = damp(cloth.pos[2], cloth.home[2], 9.0, dt);
+    cloth.rot[0] = damp(cloth.rot[0], 0, 8.0, dt);
+    cloth.rot[1] = damp(cloth.rot[1], 0.18, 8.0, dt);
+    cloth.rot[2] = damp(cloth.rot[2], 0, 8.0, dt);
+    cloth.wiggle = damp(cloth.wiggle, 0, 8.0, dt);
+  } else {
+    cloth.rot[0] = damp(cloth.rot[0], 1.15, 10.0, dt);
+    cloth.rot[2] = damp(cloth.rot[2], cloth.wiggle, 14.0, dt);
+  }
+
+  // Update Plush Ribbon Ball Physics (gentle bounces confined to cozy rug area!)
+  const ballDragged = dragState.active && dragState.type === 'ball';
+  if (!ballDragged) {
+    ball.vel[1] -= 4.2 * dt; // soft playful gravity
+    ball.pos[0] += ball.vel[0] * dt;
+    ball.pos[1] += ball.vel[1] * dt;
+    ball.pos[2] += ball.vel[2] * dt;
+    // Floor bounce
+    const floorY = ball.radius + 0.012;
+    if (ball.pos[1] < floorY) {
+      ball.pos[1] = floorY;
+      if (Math.abs(ball.vel[1]) > 0.22) {
+        ball.vel[1] = -ball.vel[1] * 0.52;
+        audio.playBallBounce(false);
+      } else {
+        ball.vel[1] = 0;
+      }
+      // Rug rolling friction
+      ball.vel[0] *= Math.exp(-3.4 * dt);
+      ball.vel[2] *= Math.exp(-3.4 * dt);
+    }
+    // Keep ball inside cozy living room rug bounds
+    if (ball.pos[0] < -0.82) { ball.pos[0] = -0.82; ball.vel[0] = Math.abs(ball.vel[0]) * 0.6; }
+    if (ball.pos[0] > 0.78) { ball.pos[0] = 0.78; ball.vel[0] = -Math.abs(ball.vel[0]) * 0.6; }
+    if (ball.pos[2] < -0.65) { ball.pos[2] = -0.65; ball.vel[2] = Math.abs(ball.vel[2]) * 0.6; }
+    if (ball.pos[2] > 0.24) { ball.pos[2] = 0.24; ball.vel[2] = -Math.abs(ball.vel[2]) * 0.6; }
+    // Roll rotation
+    ball.rot[0] += ball.vel[2] * dt / ball.radius;
+    ball.rot[2] -= ball.vel[0] * dt / ball.radius;
+  }
+
+  // Update Sparkle Motes
+  for (let i = sparkles.length - 1; i >= 0; i--) {
+    const sp = sparkles[i];
+    sp.age += dt;
+    sp.x += sp.vx * dt;
+    sp.y += sp.vy * dt;
+    sp.z += sp.vz * dt;
+    sp.vy *= 0.96;
+    if (sp.age >= sp.life) sparkles.splice(i, 1);
+  }
+}
+
+// ============================================================================
+// 12. RENDERING PIPELINE (Shadow Pass -> Main PBR Pass -> Volumetric FX -> Post)
+// ============================================================================
+const drawList = [];
+const alphaList = [];
+
+function pushDraw(mesh, model, tex, baseColor, pbr, matMode = 0, furPart = 0, opts = null) {
+  const item = {
+    mesh, model, tex, baseColor, pbr, matMode, furPart,
+    waveAmp: opts && opts.waveAmp ? opts.waveAmp : 0,
+    noShadow: !!(opts && opts.noShadow),
+    highlight: opts && opts.highlight ? opts.highlight : [0, 0, 0, 0]
+  };
+  if (opts && opts.alpha) alphaList.push(item);
+  else drawList.push(item);
+}
+
+function buildSceneDrawLists() {
+  drawList.length = 0;
+  alphaList.length = 0;
+  const m = () => M4.create();
+
+  // 1. Honey-Oak Floor (with sunlit window patch + rainbow prism caustic!)
+  const mFloor = m();
+  pushDraw(MESH.floor, mFloor, TEX.wood, [0.96, 0.92, 0.87, 1], [0.46, 0, 0.0, 4.5], 6, 0, { noShadow: true });
+
+  // 2. Plush Circular Woven Rug
+  const mRug = m();
+  M4.translate(mRug, mRug, 0.0, 0.004, -0.04);
+  pushDraw(MESH.rug, mRug, TEX.rug, [1.0, 0.98, 0.95, 1], [0.88, 0, 0.35, 1.0], 6, 0, { noShadow: true });
+
+  // 3. Cozy Cream Living Room Back Wall & Wainscoting Baseboard
+  const mWall = m();
+  M4.translate(mWall, mWall, 0, 1.75, -1.68);
+  pushDraw(MESH.wall, mWall, TEX.plaster, [0.95, 0.91, 0.84, 1], [0.90, 0, 0, 3.0], 0, 0, { noShadow: true });
+
+  // Side Left Wall (warm cozy corner)
+  const mWallL = m();
+  M4.translate(mWallL, mWallL, -2.35, 1.75, -0.2);
+  M4.rotateY(mWallL, mWallL, Math.PI * 0.5);
+  pushDraw(MESH.wall, mWallL, TEX.plaster, [0.92, 0.88, 0.81, 1], [0.90, 0, 0, 3.0], 0, 0, { noShadow: true });
+
+  // Wooden Baseboard along back wall
+  const mBase = m();
+  M4.translate(mBase, mBase, 0, 0.085, -1.60);
+  M4.scale(mBase, mBase, 6.8, 0.17, 0.04);
+  pushDraw(MESH.unitBox, mBase, TEX.wood, [0.96, 0.93, 0.88, 1], [0.52, 0, 0, 2.0], 0, 0, { noShadow: true });
+
+  // 4. Sunlit Post-Rain Window (Glass + Oak Frame + Muntins + Windowsill)
+  const winX = -0.26, winY = 1.08, winZ = -1.58;
+  const mGlass = m();
+  M4.translate(mGlass, mGlass, winX, winY, winZ);
+  pushDraw(MESH.windowGlass, mGlass, TEX.white, [1, 1, 1, 1], [0.1, 0, 0, 1], 5, 0, { noShadow: true });
+
+  // Window Wooden Frame & Muntin Bars
+  const frameBars = [
+    [winX, winY + 0.71, winZ + 0.03, 1.80, 0.07, 0.09], // top
+    [winX, winY - 0.72, winZ + 0.06, 1.88, 0.06, 0.18], // wide windowsill!
+    [winX - 0.86, winY, winZ + 0.03, 0.07, 1.44, 0.09], // left
+    [winX + 0.86, winY, winZ + 0.03, 0.07, 1.44, 0.09], // right
+    [winX, winY, winZ + 0.02, 0.035, 1.38, 0.04],       // center vertical muntin
+    [winX, winY + 0.08, winZ + 0.02, 1.68, 0.035, 0.04] // horizontal muntin
+  ];
+  for (const [fx, fy, fz, sx, sy, sz] of frameBars) {
+    const mf = m();
+    M4.translate(mf, mf, fx, fy, fz);
+    M4.scale(mf, mf, sx, sy, sz);
+    pushDraw(MESH.unitBox, mf, TEX.wood, [0.95, 0.91, 0.84, 1], [0.48, 0, 0, 1.2], 0, 0, { noShadow: true });
+  }
+
+  // Curtain Rod
+  const mRod = m();
+  M4.translate(mRod, mRod, winX, winY + 0.82, winZ + 0.11);
+  M4.scale(mRod, mRod, 2.35, 0.022, 0.022);
+  pushDraw(MESH.unitBox, mRod, TEX.white, [0.76, 0.62, 0.44, 1], [0.35, 0.65, 0, 1], 0, 0, { noShadow: true });
+
+  // Sheer Billowing Cream Curtains (gentle post-rain breeze!)
+  for (const side of [-1, 1]) {
+    const mCurt = m();
+    M4.translate(mCurt, mCurt, winX + side * 0.94, winY - 0.08, winZ + 0.11);
+    M4.rotateY(mCurt, mCurt, -side * 0.14);
+    pushDraw(MESH.curtain, mCurt, TEX.fabric, [0.98, 0.96, 0.92, 0.84], [0.85, 0, 0.35, 2.0], 0, 0, {
+      waveAmp: world.curtainBreeze, alpha: true, noShadow: true
+    });
+  }
+
+  // Potted Sunlit Houseplant on Windowsill
+  const potX = 0.46, potY = 0.39, potZ = -1.49;
+  const mPot = m();
+  M4.translate(mPot, mPot, potX, potY, potZ);
+  pushDraw(MESH.pot, mPot, TEX.ceramic, [0.88, 0.66, 0.54, 1], [0.52, 0, 0, 1.5], 0, 0);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.4;
+    const mLeaf = m();
+    M4.translate(mLeaf, mLeaf, potX, potY + 0.14, potZ);
+    M4.rotateY(mLeaf, mLeaf, a + Math.sin(world.time * 1.8 + i) * 0.04 + Math.sin(world.time * 24 + i) * world.plantShake * 0.16);
+    M4.rotateX(mLeaf, mLeaf, -0.45 - (i % 2) * 0.25 + Math.sin(world.time * 18 + i) * world.plantShake * 0.14);
+    pushDraw(MESH.leaf, mLeaf, TEX.white, [0.28, 0.56, 0.30, 1], [0.32, 0, 0.15, 1], 0, 0);
+  }
+
+  // Sunlit Glass Vase with Pastel Post-Rain Blossoms on Left Windowsill
+  const vaseX = -0.88, vaseY = 0.39, vaseZ = -1.49;
+  const mVase = m();
+  M4.translate(mVase, mVase, vaseX, vaseY, vaseZ);
+  pushDraw(MESH.vase, mVase, TEX.white, [0.88, 0.94, 0.96, 0.68], [0.06, 0.05, 0, 1], 0, 0, { alpha: true });
+  const flowerCols = [[0.98, 0.78, 0.84, 1], [1.0, 0.92, 0.72, 1], [0.86, 0.84, 0.98, 1]];
+  for (let i = 0; i < 3; i++) {
+    const mFl = m();
+    const sway = Math.sin(world.time * 1.5 + i * 1.7) * 0.01;
+    M4.translate(mFl, mFl, vaseX + (i - 1) * 0.026 + sway, vaseY + 0.16 + (i === 1 ? 0.024 : 0), vaseZ + (i === 1 ? 0.01 : -0.01));
+    M4.rotateX(mFl, mFl, 0.42);
+    M4.rotateZ(mFl, mFl, (i - 1) * -0.25);
+    pushDraw(MESH.flower, mFl, TEX.white, flowerCols[i], [0.55, 0, 0.3, 1], 0, 0);
+  }
+
+  // 5. Cozy Sunlit Dog Cushion (Plush Cream & Blush Bolster Bed)
+  const mCush = m();
+  M4.translate(mCush, mCush, CUSHION_POS[0], CUSHION_POS[1] + 0.045, CUSHION_POS[2]);
+  pushDraw(MESH.cushion, mCush, TEX.fabric, [0.96, 0.88, 0.83, 1], [0.84, 0, 0.48, 3.0], 0, 0);
+
+  // 6. Foreground Wooden Feeding Tray & Pouch Caddy
+  const mTray = m();
+  M4.translate(mTray, mTray, 0.04, 0.015, 0.40);
+  pushDraw(MESH.tray, mTray, TEX.wood, [0.96, 0.88, 0.78, 1], [0.44, 0, 0, 1.5], 0, 0);
+
+  const mCaddy = m();
+  M4.translate(mCaddy, mCaddy, 0.345, 0.036, 0.41);
+  M4.rotateY(mCaddy, mCaddy, -0.18);
+  pushDraw(MESH.caddy, mCaddy, TEX.wood, [0.90, 0.78, 0.64, 1], [0.48, 0, 0, 1.2], 0, 0);
+
+  // 7. Handmade Ceramic Food Bowl + Dynamic 3D Glossy Paste Mound!
+  const mFB = m();
+  M4.translate(mFB, mFB, FOOD_BOWL_POS[0], FOOD_BOWL_POS[1], FOOD_BOWL_POS[2]);
+  pushDraw(MESH.foodBowl, mFB, TEX.ceramic, [0.98, 0.91, 0.88, 1], [0.22, 0, 0.1, 2.0], 0, 0);
+
+  for (const b of bowlBlobs) {
+    const mb = m();
+    M4.translate(mb, mb, FOOD_BOWL_POS[0] + b.x, FOOD_BOWL_POS[1] + b.y, FOOD_BOWL_POS[2] + b.z);
+    M4.scale(mb, mb, b.scale, b.scale * 0.78, b.scale);
+    pushDraw(MESH.pasteBlob, mb, TEX.white, [b.color[0], b.color[1], b.color[2], 1], [0.12, 0, 0, 1], 3, 10);
+  }
+
+  // 8. Water Dish + Animated Reflective Rippling Water Surface!
+  const mWB = m();
+  M4.translate(mWB, mWB, WATER_BOWL_POS[0], WATER_BOWL_POS[1], WATER_BOWL_POS[2]);
+  pushDraw(MESH.waterBowl, mWB, TEX.ceramic, [0.89, 0.94, 0.93, 1], [0.20, 0, 0.1, 2.0], 0, 0);
+
+  const mWat = m();
+  M4.translate(mWat, mWat, WATER_BOWL_POS[0], WATER_BOWL_POS[1] + 0.042, WATER_BOWL_POS[2]);
+  pushDraw(MESH.waterSurface, mWat, TEX.white, [0.84, 0.93, 0.95, 0.82], [0.05, 0, 0, 1], 4, 0, { alpha: true, noShadow: true });
+
+  // 9. Three Wet-Food Paste Pouches (Visibly plump -> slim as squeezed!)
+  for (const p of pouches) {
+    const mp = m();
+    M4.translate(mp, mp, p.pos[0], p.pos[1], p.pos[2]);
+    M4.rotateY(mp, mp, p.rot[1]);
+    M4.rotateX(mp, mp, p.rot[0]);
+    M4.rotateZ(mp, mp, p.rot[2]);
+    const plumpZ = 0.32 + p.fill * 0.72 - p.squeezePulse * 0.14;
+    const mBody = m();
+    M4.scale(mBody, mp, 1.0 + p.squeezePulse * 0.06, 1.0, plumpZ);
+    const hlAmt = (world.idleTimer > 4.0 && p.id === 0 && !p.open) ? (0.4 + 0.4 * Math.sin(world.time * 4.0)) : 0;
+    pushDraw(MESH.pouchBody, mBody, TEX.fabric, [p.flavor.pouchCol[0], p.flavor.pouchCol[1], p.flavor.pouchCol[2], 1],
+      [0.36, 0.08, 0.15, 1.5], 0, 0, { highlight: [1.0, 0.95, 0.8, hlAmt] });
+
+    // Tear-off cap (peels cleanly away when opened!)
+    if (p.openAnim < 0.95) {
+      const mCap = m();
+      M4.translate(mCap, mp, p.openAnim * 0.04, 0.072 + p.openAnim * 0.045, 0);
+      M4.rotateZ(mCap, mCap, -p.openAnim * 1.35);
+      M4.scale(mCap, mCap, 1 - p.openAnim * 0.6, 1 - p.openAnim * 0.6, 1);
+      pushDraw(MESH.pouchCap, mCap, TEX.white, [p.flavor.accent[0], p.flavor.accent[1], p.flavor.accent[2], 1], [0.32, 0.12, 0, 1], 0, 0);
+    }
+
+    // Cache exact 3D nozzle tip position for seamless paste extrusion!
+    V3.transformMat4(p.nozzleWorld, [0, 0.080, 0], mp);
+
+    // Shiny appetizing paste bead peeking at top nozzle once opened!
+    if (p.open && p.fill > 0.01) {
+      const mBead = m();
+      M4.translate(mBead, mp, 0, 0.076, 0);
+      const bs = 0.55 + p.squeezePulse * 0.35;
+      M4.scale(mBead, mBead, bs, bs * 0.85, bs);
+      pushDraw(MESH.pasteBlob, mBead, TEX.white, [p.flavor.pasteCol[0], p.flavor.pasteCol[1], p.flavor.pasteCol[2], 1], [0.10, 0, 0, 1], 3, 10);
+    }
+  }
+
+  // Active Squeezed Paste Ribbon Droplets
+  for (const pr of pasteRibbon) {
+    const mpr = m();
+    M4.translate(mpr, mpr, pr.pos[0], pr.pos[1], pr.pos[2]);
+    const s = (pr.r / 0.020) * (1.0 - pr.age * 2.4);
+    M4.scale(mpr, mpr, s, s * 1.1, s);
+    pushDraw(MESH.pasteBlob, mpr, TEX.white, [pr.col[0], pr.col[1], pr.col[2], 1], [0.10, 0, 0, 1], 3, 10);
+  }
+
+  // 10. Feeding Spoon (with dynamic glossy paste dollop when scooped!)
+  const mSp = m();
+  M4.translate(mSp, mSp, spoon.pos[0], spoon.pos[1], spoon.pos[2]);
+  M4.rotateY(mSp, mSp, spoon.rot[1]);
+  M4.rotateX(mSp, mSp, spoon.rot[0]);
+  M4.rotateZ(mSp, mSp, spoon.rot[2]);
+
+  const mSpScoop = m();
+  M4.translate(mSpScoop, mSp, 0, 0, -0.028);
+  pushDraw(MESH.spoonScoop, mSpScoop, TEX.white, [0.92, 0.91, 0.89, 1], [0.16, 0.82, 0, 1], 0, 0);
+
+  const mSpHand = m();
+  M4.translate(mSpHand, mSp, 0, 0.002, 0.006);
+  M4.rotateX(mSpHand, mSpHand, -Math.PI * 0.5);
+  pushDraw(MESH.spoonHandle, mSpHand, TEX.ceramic, [0.95, 0.85, 0.78, 1], [0.28, 0.05, 0, 1], 0, 0);
+
+  if (spoon.pasteAmt > 0.03) {
+    const mSpPaste = m();
+    M4.translate(mSpPaste, mSp, 0, 0.008, -0.030);
+    const sc = 0.45 + spoon.pasteAmt * 0.72;
+    M4.scale(mSpPaste, mSpPaste, sc * 0.95, sc * 0.72, sc * 1.15);
+    pushDraw(MESH.pasteBlob, mSpPaste, TEX.white, [spoon.pasteCol[0], spoon.pasteCol[1], spoon.pasteCol[2], 1], [0.10, 0, 0, 1], 3, 10);
+  }
+
+  // 11. Soft Folded Pastel Linen Cloth
+  const mCl = m();
+  M4.translate(mCl, mCl, cloth.pos[0], cloth.pos[1], cloth.pos[2]);
+  M4.rotateY(mCl, mCl, cloth.rot[1]);
+  M4.rotateX(mCl, mCl, cloth.rot[0]);
+  M4.rotateZ(mCl, mCl, cloth.rot[2]);
+  const clothGlow = dog.smears.length > 0 ? (0.3 + 0.3 * Math.sin(world.time * 4.5)) : 0;
+  pushDraw(MESH.cloth, mCl, TEX.fabric, [0.97, 0.88, 0.86, 1], [0.88, 0, 0.42, 2.2], 0, 0, {
+    highlight: [1.0, 0.95, 0.90, clothGlow]
+  });
+
+  // 12. Plush Pastel Ribbon Ball
+  const mBall = m();
+  M4.translate(mBall, mBall, ball.pos[0], ball.pos[1], ball.pos[2]);
+  M4.rotateX(mBall, mBall, ball.rot[0]);
+  M4.rotateZ(mBall, mBall, ball.rot[2]);
+  pushDraw(MESH.plushBall, mBall, TEX.ball, [1, 1, 1, 1], [0.85, 0, 0.55, 1.0], 0, 0);
+
+  // 13. Woven Wicker Refill Basket (with fresh spare pouches peeking out!)
+  const mBask = m();
+  M4.translate(mBask, mBask, BASKET_POS[0], BASKET_POS[1], BASKET_POS[2]);
+  pushDraw(MESH.basket, mBask, TEX.wicker, [0.98, 0.92, 0.84, 1], [0.78, 0, 0.1, 2.5], 0, 0);
+
+  for (let i = 0; i < 3; i++) {
+    const mSpP = m();
+    M4.translate(mSpP, mBask, (i - 1) * 0.045, 0.105, (i === 1 ? -0.02 : 0.02));
+    M4.rotateZ(mSpP, mSpP, (i - 1) * -0.18);
+    M4.rotateY(mSpP, mSpP, -0.45);
+    M4.scale(mSpP, mSpP, 0.82, 0.85, 0.72);
+    const fl = FLAVORS[i];
+    pushDraw(MESH.pouchBody, mSpP, TEX.fabric, [fl.pouchCol[0], fl.pouchCol[1], fl.pouchCol[2], 1], [0.38, 0.08, 0.15, 1.5], 0, 0);
+  }
+
+  // 14. The Blenheim Cavalier King Charles Spaniel!
+  dog.submitDrawCalls(pushDraw);
+}
+
+// Sun directional light setup (warm post-rain sun slanting from upper-left!)
+const sunDir = V3.norm(V3.create(), [-0.52, 0.82, 0.24]);
+const lightProj = M4.ortho(M4.create(), -1.6, 1.6, -1.6, 1.6, 0.2, 7.0);
+const lightView = M4.lookAt(M4.create(), [sunDir[0] * 3.0, sunDir[1] * 3.0, sunDir[2] * 3.0], [0, 0.15, 0], [0, 1, 0]);
+const lightVP = M4.mul(M4.create(), lightProj, lightView);
+
+function renderFrame() {
+  buildSceneDrawLists();
+
+  // --- PASS 1: Soft Shadow Map ---
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.disable(gl.CULL_FACE);
+
+  gl.useProgram(shadowProg.prog);
+  gl.uniformMatrix4fv(shadowProg.u.uLightVP, false, lightVP);
+  for (const d of drawList) {
+    if (d.noShadow) continue;
+    gl.uniformMatrix4fv(shadowProg.u.uModel, false, d.model);
+    gl.bindVertexArray(d.mesh.vao);
+    gl.drawElements(gl.TRIANGLES, d.mesh.count, gl.UNSIGNED_SHORT, 0);
+  }
+
+  // --- PASS 2: Main Photorealistic PBR Scene ---
+  gl.bindFramebuffer(gl.FRAMEBUFFER, usePostFBO ? sceneFBO : null);
+  gl.viewport(0, 0, fboW, fboH);
+  gl.clearColor(0.88, 0.84, 0.78, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  gl.useProgram(mainProg.prog);
+  gl.uniformMatrix4fv(mainProg.u.uVP, false, cam.vp);
+  gl.uniformMatrix4fv(mainProg.u.uLightVP, false, lightVP);
+  gl.uniform3fv(mainProg.u.uCamPos, cam.pos);
+  gl.uniform3fv(mainProg.u.uSunDir, sunDir);
+
+  // Subtle living post-rain golden warmth progression!
+  const warmShift = 0.5 + 0.5 * Math.sin(world.time * 0.04);
+  gl.uniform3f(mainProg.u.uSunColor, 1.55 + warmShift * 0.14, 1.38 + warmShift * 0.06, 1.12);
+  gl.uniform3f(mainProg.u.uSkyColor, 0.76, 0.86, 0.96);
+  gl.uniform3f(mainProg.u.uBounceColor, 0.72, 0.56, 0.42);
+  gl.uniform1f(mainProg.u.uTime, world.time);
+  gl.uniform1f(mainProg.u.uRainbowStrength, world.rainbowStrength);
+  gl.uniform1f(mainProg.u.uRainSlide, world.rainSlideBoost);
+
+  // Upload water ripples
+  const flatRipples = new Float32Array(16);
+  for (let i = 0; i < 4; i++) flatRipples.set(waterRipples[i], i * 4);
+  gl.uniform4fv(mainProg.u.uRipples, flatRipples);
+
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.uniform1i(mainProg.u.uShadowMap, 1);
+  gl.uniform1i(mainProg.u.uTex, 0);
+
+  const drawItem = (d) => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, d.tex);
+    gl.uniformMatrix4fv(mainProg.u.uModel, false, d.model);
+    gl.uniform4fv(mainProg.u.uBaseColor, d.baseColor);
+    gl.uniform4fv(mainProg.u.uPBR, d.pbr);
+    gl.uniform1i(mainProg.u.uMatMode, d.matMode);
+    gl.uniform1i(mainProg.u.uFurPart, d.furPart);
+    gl.uniform1f(mainProg.u.uWaveAmp, d.waveAmp);
+    gl.uniform4fv(mainProg.u.uHighlight, d.highlight);
+    gl.bindVertexArray(d.mesh.vao);
+    gl.drawElements(gl.TRIANGLES, d.mesh.count, gl.UNSIGNED_SHORT, 0);
+  };
+
+  // Opaque objects
+  for (const d of drawList) drawItem(d);
+
+  // Translucent objects (water surface, sheer curtains)
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  for (const d of alphaList) drawItem(d);
+
+  // --- PASS 3: Volumetric Golden Sunbeams, Floating Dust Motes & Sparkles ---
+  gl.useProgram(fxProg.prog);
+  gl.uniformMatrix4fv(fxProg.u.uVP, false, cam.vp);
+  gl.uniform1f(fxProg.u.uTime, world.time);
+  gl.blendFunc(gl.ONE, gl.ONE); // soft additive sunlit glow
+
+  // Diagonal post-rain sunbeam shafts slanting from window into the living room
+  gl.uniform1i(fxProg.u.uFxMode, 0);
+  const beamAlpha = 0.065 + world.rainbowStrength * 0.045;
+  gl.uniform4f(fxProg.u.uColor, 1.0, 0.92, 0.72, beamAlpha);
+  for (let i = 0; i < 2; i++) {
+    const mb = M4.create();
+    M4.translate(mb, mb, -0.35 + i * 0.42, 0.72, -0.68 + i * 0.16);
+    M4.rotateY(mb, mb, 0.25);
+    M4.rotateZ(mb, mb, -0.44);
+    M4.rotateX(mb, mb, 0.34);
+    gl.uniformMatrix4fv(fxProg.u.uModel, false, mb);
+    gl.bindVertexArray(MESH.sunbeam.vao);
+    gl.drawElements(gl.TRIANGLES, MESH.sunbeam.count, gl.UNSIGNED_SHORT, 0);
+  }
+
+  // Floating sunlit dust motes + joyful sparkles (billboarded toward camera)
+  gl.uniform1i(fxProg.u.uFxMode, 1);
+  gl.bindVertexArray(MESH.sparkle.vao);
+
+  const drawBillboard = (x, y, z, size, col, alpha) => {
+    const mbb = M4.create();
+    M4.translate(mbb, mbb, x, y, z);
+    // Align with inverse camera basis
+    mbb[0] = cam.view[0] * size; mbb[1] = cam.view[4] * size; mbb[2] = cam.view[8] * size;
+    mbb[4] = cam.view[1] * size; mbb[5] = cam.view[5] * size; mbb[6] = cam.view[9] * size;
+    mbb[8] = cam.view[2] * size; mbb[9] = cam.view[6] * size; mbb[10] = cam.view[10] * size;
+    gl.uniformMatrix4fv(fxProg.u.uModel, false, mbb);
+    gl.uniform4f(fxProg.u.uColor, col[0], col[1], col[2], alpha);
+    gl.drawElements(gl.TRIANGLES, MESH.sparkle.count, gl.UNSIGNED_SHORT, 0);
+  };
+
+  for (const dm of dustMotes) {
+    const dx = dm.x + Math.sin(world.time * dm.speed + dm.phase) * 0.08;
+    const dy = dm.y + Math.cos(world.time * dm.speed * 0.8 + dm.phase) * 0.06;
+    const twinkle = 0.22 + 0.26 * Math.sin(world.time * 1.9 + dm.phase);
+    drawBillboard(dx, dy, dm.z, dm.size, [1.0, 0.95, 0.80], twinkle);
+  }
+  for (const sp of sparkles) {
+    const t = sp.age / sp.life;
+    const a = Math.sin(t * Math.PI) * 0.95;
+    drawBillboard(sp.x, sp.y, sp.z, sp.size * (0.7 + 0.5 * Math.sin(t * Math.PI)), sp.col, a);
+  }
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+
+  // --- PASS 4: ACES Filmic Tone Mapping + Warm Sunlit Bloom ---
+  if (usePostFBO) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.disable(gl.DEPTH_TEST);
+    gl.useProgram(postProg.prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneColTex);
+    gl.uniform1i(postProg.u.uScene, 0);
+    gl.uniform2f(postProg.u.uTexelSize, 1.0 / fboW, 1.0 / fboH);
+    gl.bindVertexArray(null);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+}
+
+// ============================================================================
+// 13. MAIN LOOP
+// ============================================================================
+let lastTime = performance.now();
+function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  resizeRenderTargets();
+  updateWorld(dt);
+  updateCamera(dt);
+  renderFrame();
+}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
