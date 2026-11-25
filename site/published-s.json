@@ -11,6 +11,7 @@
   "s-30a-gem-v1",
   "s-30a-v1",
   "s-31a-gem-v1",
+  "s-31a-opus-v1",
   "s-31a-v1",
   "s-32a-gem-v1",
   "s-32a-v1",
@@ -24,6 +25,10 @@
   },
   "s-29a-opus-v1": {
    "file": "thumbs/s-29a-opus-v1.jpg",
+   "kind": "real"
+  },
+  "s-31a-opus-v1": {
+   "file": "thumbs/s-31a-opus-v1.jpg",
    "kind": "real"
   },
   "s-28a-gem-v1": {
