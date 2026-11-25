@@ -1,0 +1,4348 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta name="robots" content="noindex,nofollow">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>ぺんぎんのおさかな</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #6ebce8;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+'use strict';
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {
+  antialias: true,
+  alpha: false,
+  depth: true,
+  powerPreference: 'high-performance'
+});
+if (!gl) return;
+
+// ============================================================================
+// 1. MATH & NOISE UTILITIES
+// ============================================================================
+const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt));
+const angleDiff = (a, b) => {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+};
+const dampAngle = (a, b, lambda, dt) => a + angleDiff(a, b) * (1 - Math.exp(-lambda * dt));
+
+const V3 = {
+  add: (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]],
+  sub: (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  scale: (a, s) => [a[0]*s, a[1]*s, a[2]*s],
+  dot: (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2],
+  cross: (a, b) => [
+    a[1]*b[2] - a[2]*b[1],
+    a[2]*b[0] - a[0]*b[2],
+    a[0]*b[1] - a[1]*b[0]
+  ],
+  len: (a) => Math.hypot(a[0], a[1], a[2]),
+  dist: (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]),
+  norm: (a) => {
+    const l = Math.hypot(a[0], a[1], a[2]);
+    return l > 1e-6 ? [a[0]/l, a[1]/l, a[2]/l] : [0, 1, 0];
+  }
+};
+
+const M4 = {
+  create: () => {
+    const m = new Float32Array(16);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  identity: (m) => {
+    m.fill(0);
+    m[0] = m[5] = m[10] = m[15] = 1;
+    return m;
+  },
+  copy: (out, a) => { out.set(a); return out; },
+  multiply: (out, a, b) => {
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],
+          a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11],
+          a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    let b0=b[0],b1=b[1],b2=b[2],b3=b[3];
+    out[0]=b0*a00+b1*a10+b2*a20+b3*a30;
+    out[1]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[2]=b0*a02+b1*a12+b2*a22+b3*a32;
+    out[3]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[4];b1=b[5];b2=b[6];b3=b[7];
+    out[4]=b0*a00+b1*a10+b2*a20+b3*a30;
+    out[5]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[6]=b0*a02+b1*a12+b2*a22+b3*a32;
+    out[7]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[8];b1=b[9];b2=b[10];b3=b[11];
+    out[8]=b0*a00+b1*a10+b2*a20+b3*a30;
+    out[9]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[10]=b0*a02+b1*a12+b2*a22+b3*a32;
+    out[11]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[12];b1=b[13];b2=b[14];b3=b[15];
+    out[12]=b0*a00+b1*a10+b2*a20+b3*a30;
+    out[13]=b0*a01+b1*a11+b2*a21+b3*a31;
+    out[14]=b0*a02+b1*a12+b2*a22+b3*a32;
+    out[15]=b0*a03+b1*a13+b2*a23+b3*a33;
+    return out;
+  },
+  translate: (m, x, y, z) => {
+    m[12] = m[0]*x + m[4]*y + m[8]*z + m[12];
+    m[13] = m[1]*x + m[5]*y + m[9]*z + m[13];
+    m[14] = m[2]*x + m[6]*y + m[10]*z + m[14];
+    m[15] = m[3]*x + m[7]*y + m[11]*z + m[15];
+    return m;
+  },
+  scale: (m, x, y, z) => {
+    m[0]*=x; m[1]*=x; m[2]*=x; m[3]*=x;
+    m[4]*=y; m[5]*=y; m[6]*=y; m[7]*=y;
+    m[8]*=z; m[9]*=z; m[10]*=z; m[11]*=z;
+    return m;
+  },
+  rotateX: (m, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a10=m[4],a11=m[5],a12=m[6],a13=m[7],
+          a20=m[8],a21=m[9],a22=m[10],a23=m[11];
+    m[4]=a10*c+a20*s; m[5]=a11*c+a21*s; m[6]=a12*c+a22*s; m[7]=a13*c+a23*s;
+    m[8]=a20*c-a10*s; m[9]=a21*c-a11*s; m[10]=a22*c-a12*s; m[11]=a23*c-a13*s;
+    return m;
+  },
+  rotateY: (m, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00=m[0],a01=m[1],a02=m[2],a03=m[3],
+          a20=m[8],a21=m[9],a22=m[10],a23=m[11];
+    m[0]=a00*c-a20*s; m[1]=a01*c-a21*s; m[2]=a02*c-a22*s; m[3]=a03*c-a23*s;
+    m[8]=a00*s+a20*c; m[9]=a01*s+a21*c; m[10]=a02*s+a22*c; m[11]=a03*s+a23*c;
+    return m;
+  },
+  rotateZ: (m, rad) => {
+    const s = Math.sin(rad), c = Math.cos(rad);
+    const a00=m[0],a01=m[1],a02=m[2],a03=m[3],
+          a10=m[4],a11=m[5],a12=m[6],a13=m[7];
+    m[0]=a00*c+a10*s; m[1]=a01*c+a11*s; m[2]=a02*c+a12*s; m[3]=a03*c+a13*s;
+    m[4]=a10*c-a00*s; m[5]=a11*c-a01*s; m[6]=a12*c-a02*s; m[7]=a13*c-a03*s;
+    return m;
+  },
+  perspective: (out, fovy, aspect, near, far) => {
+    const f = 1.0 / Math.tan(fovy * 0.5);
+    const nf = 1 / (near - far);
+    out.fill(0);
+    out[0] = f / aspect;
+    out[5] = f;
+    out[10] = (far + near) * nf;
+    out[11] = -1;
+    out[14] = (2 * far * near) * nf;
+    return out;
+  },
+  ortho: (out, l, r, b, t, n, f) => {
+    const lr = 1 / (l - r), bt = 1 / (b - t), nf = 1 / (n - f);
+    out.fill(0);
+    out[0] = -2 * lr;
+    out[5] = -2 * bt;
+    out[10] = 2 * nf;
+    out[12] = (l + r) * lr;
+    out[13] = (t + b) * bt;
+    out[14] = (f + n) * nf;
+    out[15] = 1;
+    return out;
+  },
+  lookAt: (out, eye, center, up) => {
+    const zx = eye[0]-center[0], zy = eye[1]-center[1], zz = eye[2]-center[2];
+    let len = Math.hypot(zx, zy, zz) || 1;
+    const z0 = zx/len, z1 = zy/len, z2 = zz/len;
+    let xx = up[1]*z2 - up[2]*z1, xy = up[2]*z0 - up[0]*z2, xz = up[0]*z1 - up[1]*z0;
+    len = Math.hypot(xx, xy, xz) || 1;
+    const x0 = xx/len, x1 = xy/len, x2 = xz/len;
+    const y0 = z1*x2 - z2*x1, y1 = z2*x0 - z0*x2, y2 = z0*x1 - z1*x0;
+    out[0]=x0; out[1]=y0; out[2]=z0; out[3]=0;
+    out[4]=x1; out[5]=y1; out[6]=z1; out[7]=0;
+    out[8]=x2; out[9]=y2; out[10]=z2; out[11]=0;
+    out[12]=-(x0*eye[0]+x1*eye[1]+x2*eye[2]);
+    out[13]=-(y0*eye[0]+y1*eye[1]+y2*eye[2]);
+    out[14]=-(z0*eye[0]+z1*eye[1]+z2*eye[2]);
+    out[15]=1;
+    return out;
+  },
+  invert: (out, a) => {
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],
+          a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11],
+          a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    const b00=a00*a11-a01*a10, b01=a00*a12-a02*a10, b02=a00*a13-a03*a10,
+          b03=a01*a12-a02*a11, b04=a01*a13-a03*a11, b05=a02*a13-a03*a12,
+          b06=a20*a31-a21*a30, b07=a20*a32-a22*a30, b08=a20*a33-a23*a30,
+          b09=a21*a32-a22*a31, b10=a21*a33-a23*a31, b11=a22*a33-a23*a32;
+    let det = b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+    if (!det) return null;
+    det = 1.0 / det;
+    out[0]=(a11*b11-a12*b10+a13*b09)*det;
+    out[1]=(a02*b10-a01*b11-a03*b09)*det;
+    out[2]=(a31*b05-a32*b04+a33*b03)*det;
+    out[3]=(a22*b04-a21*b05-a23*b03)*det;
+    out[4]=(a12*b08-a10*b11-a13*b07)*det;
+    out[5]=(a00*b11-a02*b08+a03*b07)*det;
+    out[6]=(a32*b02-a30*b05-a33*b01)*det;
+    out[7]=(a20*b05-a22*b02+a23*b01)*det;
+    out[8]=(a10*b10-a11*b08+a13*b06)*det;
+    out[9]=(a01*b08-a00*b10-a03*b06)*det;
+    out[10]=(a30*b04-a31*b02+a33*b00)*det;
+    out[11]=(a21*b02-a20*b04-a23*b00)*det;
+    out[12]=(a11*b07-a10*b09-a12*b06)*det;
+    out[13]=(a00*b09-a01*b07+a02*b06)*det;
+    out[14]=(a31*b01-a30*b03-a32*b00)*det;
+    out[15]=(a20*b03-a21*b01+a22*b00)*det;
+    return out;
+  },
+  normalMat3: (out, m) => {
+    const a00=m[0],a01=m[1],a02=m[2],
+          a10=m[4],a11=m[5],a12=m[6],
+          a20=m[8],a21=m[9],a22=m[10];
+    const b01 = a22*a11 - a12*a21;
+    const b11 = -a22*a10 + a12*a20;
+    const b21 = a21*a10 - a11*a20;
+    let det = a00*b01 + a01*b11 + a02*b21;
+    if (Math.abs(det) < 1e-8) {
+      out[0]=1;out[1]=0;out[2]=0;out[3]=0;out[4]=1;out[5]=0;out[6]=0;out[7]=0;out[8]=1;
+      return out;
+    }
+    det = 1.0 / det;
+    out[0] = b01 * det;
+    out[1] = b11 * det;
+    out[2] = b21 * det;
+    out[3] = (-a22*a01 + a02*a21) * det;
+    out[4] = (a22*a00 - a02*a20) * det;
+    out[5] = (-a21*a00 + a01*a20) * det;
+    out[6] = (a12*a01 - a02*a11) * det;
+    out[7] = (-a12*a00 + a02*a10) * det;
+    out[8] = (a11*a00 - a01*a10) * det;
+    return out;
+  },
+  transformPoint: (m, p) => {
+    const x=p[0], y=p[1], z=p[2];
+    const w = m[3]*x + m[7]*y + m[11]*z + m[15] || 1;
+    return [
+      (m[0]*x + m[4]*y + m[8]*z + m[12]) / w,
+      (m[1]*x + m[5]*y + m[9]*z + m[13]) / w,
+      (m[2]*x + m[6]*y + m[10]*z + m[14]) / w
+    ];
+  }
+};
+
+function hash2(x, z) {
+  const s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453123;
+  return s - Math.floor(s);
+}
+function noise2(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uz = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz), b = hash2(ix+1, iz);
+  const c = hash2(ix, iz+1), d = hash2(ix+1, iz+1);
+  return lerp(lerp(a, b, ux), lerp(c, d, ux), uz);
+}
+function fbm2(x, z) {
+  return noise2(x, z) * 0.55 + noise2(x*2.03 + 17.1, z*2.07 + 9.2) * 0.30 + noise2(x*4.11 - 5.3, z*4.05 + 31.4) * 0.15;
+}
+
+// ============================================================================
+// 2. SHARED AQUARIUM TERRAIN HEIGHTFIELD
+// ============================================================================
+const WATER_Y = 0.0;
+const BUCKET_POS = [-1.85, 0.45, 2.45];
+const WATERFALL_POS = [-1.35, 1.55, -2.95];
+
+function getTerrainHeight(x, z) {
+  // Base organic pool basin centered around (0.05, -0.55)
+  const px = (x - 0.05) / 2.65;
+  const pz = (z + 0.52) / 1.92;
+  const warp = (fbm2(x * 0.42 + 2.1, z * 0.42 - 1.3) - 0.5) * 0.32;
+  const poolDist = Math.hypot(px, pz) + warp;
+
+  // Deep turquoise pool inside, coastal terrace outside
+  let h = lerp(-1.48, 0.42, smoothstep(0.55, 1.18, poolDist));
+
+  // Smooth front sunny ledge plateau (wide & walkable for penguins & bucket)
+  const frontFlat = smoothstep(1.25, 2.05, z) * (1 - smoothstep(2.9, 4.4, Math.abs(x)));
+  h = lerp(h, 0.44, frontFlat * 0.88);
+
+  // Gentle front entry cove so penguins can waddle straight into & out of water
+  const cove = Math.exp(-((x - 0.05)*(x - 0.05) / 0.85 + (z - 1.38)*(z - 1.38) / 0.36));
+  h -= cove * 0.34;
+
+  // Left smooth toboggan slide rock (rises on left, slopes cleanly into water)
+  const leftHill = smoothstep(-1.45, -3.25, x) * Math.exp(-((z - 0.18)*(z - 0.18)) / 2.8);
+  h += leftHill * 0.68;
+
+  // Right diving rock terrace (flat-topped elevated boulder ledge)
+  const rightRock = smoothstep(1.65, 2.55, x) * Math.exp(-((z + 0.25)*(z + 0.25)) / 2.6);
+  const rightTop = smoothstep(1.85, 2.6, x) * (1 - smoothstep(1.0, 2.1, Math.abs(z + 0.25)));
+  h += rightRock * 0.38;
+  h = lerp(h, 0.76, rightTop * 0.65);
+
+  // Back scenic cliff amphitheater behind the pool
+  const backCliff = smoothstep(-2.15, -3.95, z);
+  const cliffNoise = (fbm2(x * 0.55 + 5.0, z * 0.55) - 0.35) * 0.9;
+  h += backCliff * (1.85 + cliffNoise);
+
+  // Sculpted waterfall notch on the back-left cliff
+  const wfNotch = Math.exp(-((x + 1.35)*(x + 1.35) / 0.42 + (z + 3.05)*(z + 3.05) / 0.85));
+  h -= wfNotch * 0.65;
+
+  // Outer perimeter rock rim
+  const sideRim = smoothstep(3.6, 6.2, Math.abs(x));
+  h += sideRim * 0.85;
+
+  // Natural limestone micro-relief (smoother on the front shelf & pool floor)
+  const microAmp = lerp(0.03, 0.11, smoothstep(0.1, 1.2, h)) * (1 - frontFlat * 0.65);
+  h += (fbm2(x * 1.65, z * 1.65) - 0.5) * microAmp;
+
+  // Keep bucket pad super flat
+  const bDist = Math.hypot(x - BUCKET_POS[0], z - BUCKET_POS[2]);
+  h = lerp(h, 0.45, 1 - smoothstep(0.35, 0.82, bDist));
+
+  // Keep right shell gift shelf gently flat
+  const gDist = Math.hypot((x - 1.95)/0.95, (z - 2.35)/0.55);
+  h = lerp(h, 0.44, (1 - smoothstep(0.6, 1.2, gDist)) * 0.7);
+
+  return h;
+}
+
+function getTerrainNormal(x, z) {
+  const e = 0.08;
+  const hL = getTerrainHeight(x - e, z);
+  const hR = getTerrainHeight(x + e, z);
+  const hD = getTerrainHeight(x, z - e);
+  const hU = getTerrainHeight(x, z + e);
+  return V3.norm([hL - hR, 2 * e, hD - hU]);
+}
+
+function isPointInWater(x, z) {
+  return getTerrainHeight(x, z) < WATER_Y - 0.06;
+}
+
+// ============================================================================
+// 3. PROCEDURAL WEB AUDIO ENGINE (SUNNY AQUARIUM + CUTE PENGUIN VOICES)
+// ============================================================================
+const Sound = (() => {
+  let ctx = null;
+  let master = null;
+  let noiseBuf = null;
+  let unlocked = false;
+  let waterfallGain = null;
+
+  function unlock() {
+    if (unlocked) {
+      if (ctx && ctx.state === 'suspended') ctx.resume();
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = 0.42;
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -14;
+    comp.ratio.value = 4;
+    master.connect(comp);
+    comp.connect(ctx.destination);
+
+    // Pre-generate soft pink-ish noise buffer (2 seconds)
+    const len = ctx.sampleRate * 2;
+    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    let b0=0, b1=0, b2=0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      b0 = 0.997*b0 + w*0.029;
+      b1 = 0.985*b1 + w*0.032;
+      b2 = 0.950*b2 + w*0.048;
+      d[i] = (b0 + b1 + b2 + w * 0.18) * 0.4;
+    }
+
+    // Gentle sunny aquarium waterfall & water murmur bed
+    const amb = ctx.createBufferSource();
+    amb.buffer = noiseBuf;
+    amb.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'bandpass';
+    lp.frequency.value = 680;
+    lp.Q.value = 0.7;
+    waterfallGain = ctx.createGain();
+    waterfallGain.gain.value = 0.055;
+    amb.connect(lp);
+    lp.connect(waterfallGain);
+    waterfallGain.connect(master);
+    amb.start();
+
+    unlocked = true;
+  }
+
+  function setWaterfallBoost(boost) {
+    if (!ctx || !waterfallGain) return;
+    waterfallGain.gain.setTargetAtTime(0.055 + boost * 0.14, ctx.currentTime, 0.18);
+  }
+
+  function chirp(pitchMult = 1.0, mood = 'curious') {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const playNote = (delay, f0, f1, dur, vol, wave = 'triangle') => {
+      const osc = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const filt = ctx.createBiquadFilter();
+      const g = ctx.createGain();
+      osc.type = wave;
+      osc2.type = 'sine';
+      osc.frequency.setValueAtTime(f0 * pitchMult, now + delay);
+      osc.frequency.exponentialRampToValueAtTime(f1 * pitchMult, now + delay + dur);
+      osc2.frequency.setValueAtTime(f0 * pitchMult * 2.01, now + delay);
+      osc2.frequency.exponentialRampToValueAtTime(f1 * pitchMult * 2.01, now + delay + dur);
+      filt.type = 'bandpass';
+      filt.frequency.value = 1450 * pitchMult;
+      filt.Q.value = 1.8;
+      g.gain.setValueAtTime(0.0001, now + delay);
+      g.gain.linearRampToValueAtTime(vol, now + delay + dur * 0.18);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + delay + dur);
+      const g2 = ctx.createGain();
+      g2.gain.value = 0.25;
+      osc.connect(filt);
+      osc2.connect(g2);
+      g2.connect(filt);
+      filt.connect(g);
+      g.connect(master);
+      osc.start(now + delay);
+      osc2.start(now + delay);
+      osc.stop(now + delay + dur + 0.02);
+      osc2.stop(now + delay + dur + 0.02);
+    };
+
+    if (mood === 'curious') {
+      playNote(0, 560, 840, 0.13, 0.22);
+    } else if (mood === 'eager') {
+      playNote(0, 660, 960, 0.09, 0.20);
+      playNote(0.10, 740, 1080, 0.10, 0.22);
+    } else if (mood === 'happy') {
+      playNote(0, 620, 940, 0.10, 0.22);
+      playNote(0.09, 780, 1180, 0.11, 0.24);
+      playNote(0.19, 920, 1340, 0.15, 0.20);
+    } else if (mood === 'coo') {
+      playNote(0, 480, 590, 0.18, 0.18, 'sine');
+      playNote(0.14, 590, 510, 0.16, 0.14, 'sine');
+    } else if (mood === 'dive') {
+      playNote(0, 880, 540, 0.16, 0.18);
+    } else if (mood === 'celebrate') {
+      playNote(0, 660, 990, 0.10, 0.22);
+      playNote(0.09, 880, 1320, 0.11, 0.24);
+      playNote(0.19, 1050, 1480, 0.18, 0.22);
+    }
+  }
+
+  function gulp() {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(320, now);
+    osc.frequency.exponentialRampToValueAtTime(190, now + 0.06);
+    osc.frequency.exponentialRampToValueAtTime(460, now + 0.13);
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.24, now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    osc.stop(now + 0.17);
+  }
+
+  function splash(intensity = 0.6) {
+    if (!ctx || !noiseBuf) return;
+    const now = ctx.currentTime;
+    const s = clamp(intensity, 0.15, 1.3);
+    // Filtered noise splash
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(900 + s * 600, now);
+    bp.frequency.exponentialRampToValueAtTime(340, now + 0.28 * s + 0.12);
+    bp.Q.value = 0.9;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.28 * s, now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.28 * s + 0.15);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(master);
+    src.start(now, Math.random() * 0.8);
+    src.stop(now + 0.55);
+
+    // Bubble plop
+    const osc = ctx.createOscillator();
+    const og = ctx.createGain();
+    osc.type = 'sine';
+    const baseF = 380 + Math.random() * 260;
+    osc.frequency.setValueAtTime(baseF * 0.65, now);
+    osc.frequency.exponentialRampToValueAtTime(baseF * 1.45, now + 0.09);
+    og.gain.setValueAtTime(0.001, now);
+    og.gain.linearRampToValueAtTime(0.18 * s, now + 0.015);
+    og.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+    osc.connect(og);
+    og.connect(master);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  }
+
+  function bubble() {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    const f = 520 + Math.random() * 620;
+    osc.frequency.setValueAtTime(f * 0.72, now);
+    osc.frequency.exponentialRampToValueAtTime(f * 1.55, now + 0.075);
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.09, now + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    osc.stop(now + 0.1);
+  }
+
+  function bucketClink() {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [1040, 1580, 2420].forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f + Math.random() * 50, now + idx * 0.012);
+      g.gain.setValueAtTime(0.001, now + idx * 0.012);
+      g.gain.linearRampToValueAtTime(0.09 / (idx + 1), now + idx * 0.012 + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.012 + 0.16);
+      osc.connect(g);
+      g.connect(master);
+      osc.start(now + idx * 0.012);
+      osc.stop(now + idx * 0.012 + 0.18);
+    });
+  }
+
+  function iceClink() {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [2200, 3150].forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(f + Math.random() * 240, now + i * 0.025);
+      g.gain.setValueAtTime(0.001, now + i * 0.025);
+      g.gain.linearRampToValueAtTime(0.07, now + i * 0.025 + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.025 + 0.09);
+      osc.connect(g);
+      g.connect(master);
+      osc.start(now + i * 0.025);
+      osc.stop(now + i * 0.025 + 0.11);
+    });
+  }
+
+  function ballBoop() {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(340, now);
+    osc.frequency.exponentialRampToValueAtTime(165, now + 0.14);
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.24, now + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
+  function shellChime(idx = 0) {
+    if (!ctx) return;
+    const pent = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66];
+    const f = pent[idx % pent.length];
+    const now = ctx.currentTime;
+    [1, 2.0, 3.01].forEach((m, k) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f * m, now);
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(0.16 / (k * 1.8 + 1), now + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0005, now + 0.65 / (k + 1));
+      osc.connect(g);
+      g.connect(master);
+      osc.start(now);
+      osc.stop(now + 0.7);
+    });
+  }
+
+  function rainbowShimmer() {
+    if (!ctx) return;
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+    const now = ctx.currentTime;
+    notes.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const t = now + i * 0.065;
+      osc.frequency.setValueAtTime(f, t);
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.09, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 0.65);
+      osc.connect(g);
+      g.connect(master);
+      osc.start(t);
+      osc.stop(t + 0.7);
+    });
+  }
+
+  return { unlock, setWaterfallBoost, chirp, gulp, splash, bubble, bucketClink, iceClink, ballBoop, shellChime, rainbowShimmer };
+})();
+
+// ============================================================================
+// 4. WEBGL2 SHADERS
+// ============================================================================
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+function createProgram(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+function getUniforms(prog, names) {
+  const out = {};
+  for (const n of names) out[n] = gl.getUniformLocation(prog, n);
+  return out;
+}
+
+// --- 4A. Shadow Map Shader ---
+const shadowProg = createProgram(
+`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+uniform mat4 uModel;
+uniform mat4 uLightViewProj;
+uniform float uFishWiggle;
+uniform float uTime;
+void main() {
+  vec3 pos = aPos;
+  if (uFishWiggle > 0.001) {
+    float tailFactor = clamp((-pos.z + 0.06) * 4.5, 0.0, 1.0);
+    pos.x += sin(uTime * 15.0 - pos.z * 16.0) * 0.032 * uFishWiggle * tailFactor;
+  }
+  gl_Position = uLightViewProj * uModel * vec4(pos, 1.0);
+}`,
+`#version 300 es
+precision highp float;
+void main() {}`
+);
+const shadowU = getUniforms(shadowProg, ['uModel', 'uLightViewProj', 'uFishWiggle', 'uTime']);
+
+// --- 4B. Daytime Sunny Sky & Drifting Clouds Shader ---
+const skyProg = createProgram(
+`#version 300 es
+precision highp float;
+out vec2 vNDC;
+void main() {
+  vec2 p = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+  vNDC = p;
+  gl_Position = vec4(p, 0.9999, 1.0);
+}`,
+`#version 300 es
+precision highp float;
+in vec2 vNDC;
+uniform mat4 uInvViewProj;
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform float uTime;
+out vec4 fragColor;
+
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+    mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x),
+    u.y
+  );
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) {
+    v += a * vnoise(p);
+    p = p * 2.05 + vec2(13.4, 7.1);
+    a *= 0.5;
+  }
+  return v;
+}
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+  vec4 worldH = uInvViewProj * vec4(vNDC, 1.0, 1.0);
+  vec3 dir = normalize(worldH.xyz / worldH.w - uCamPos);
+  float h = clamp(dir.y, 0.0, 1.0);
+
+  // Sunny summer-day sky gradient
+  vec3 zenith = vec3(0.08, 0.36, 0.82);
+  vec3 midSky = vec3(0.24, 0.62, 0.94);
+  vec3 horizon = vec3(0.76, 0.91, 0.99);
+  vec3 sky = mix(horizon, midSky, smoothstep(0.0, 0.32, h));
+  sky = mix(sky, zenith, smoothstep(0.25, 0.85, h));
+
+  // Warm sun glow
+  float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
+  sky += vec3(1.0, 0.93, 0.78) * pow(sunDot, 12.0) * 0.35;
+  sky += vec3(1.4, 1.32, 1.15) * pow(sunDot, 220.0) * 1.4;
+
+  // Soft sunlit daytime clouds
+  if (dir.y > 0.03) {
+    vec2 cloudUV = dir.xz / (dir.y + 0.22) * 1.15 + vec2(uTime * 0.014, uTime * 0.004);
+    float c1 = fbm(cloudUV);
+    float c2 = fbm(cloudUV * 2.1 + vec2(3.2, -1.7));
+    float cloud = smoothstep(0.47, 0.74, c1 * 0.72 + c2 * 0.28);
+    cloud *= smoothstep(0.03, 0.22, dir.y) * (1.0 - smoothstep(0.62, 0.95, dir.y));
+    float lit = smoothstep(0.35, 0.75, fbm(cloudUV + uSunDir.xz * 0.14));
+    vec3 cloudDark = vec3(0.68, 0.80, 0.92);
+    vec3 cloudBright = vec3(1.12, 1.10, 1.06);
+    vec3 cloudCol = mix(cloudDark, cloudBright, 0.45 + 0.55 * lit + pow(sunDot, 4.0) * 0.25);
+    sky = mix(sky, cloudCol, cloud * 0.82);
+  }
+
+  vec3 col = pow(aces(sky), vec3(1.0 / 2.2));
+  fragColor = vec4(col, 1.0);
+}`
+);
+const skyU = getUniforms(skyProg, ['uInvViewProj', 'uCamPos', 'uSunDir', 'uTime']);
+
+// --- 4C. Main Photorealistic PBR Shader ---
+const pbrProg = createProgram(
+`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec3 aColor;
+
+uniform mat4 uModel;
+uniform mat4 uViewProj;
+uniform mat3 uNormalMat;
+uniform mat4 uLightViewProj;
+uniform float uTime;
+uniform float uFishWiggle;
+uniform int uMatType;
+
+out vec3 vWorldPos;
+out vec3 vLocalPos;
+out vec3 vNormal;
+out vec2 vUV;
+out vec3 vColor;
+out vec4 vLightPos;
+
+void main() {
+  vec3 pos = aPos;
+  vec3 nrm = aNormal;
+  if (uFishWiggle > 0.001) {
+    float tailFactor = clamp((-pos.z + 0.06) * 4.5, 0.0, 1.0);
+    float w = sin(uTime * 15.0 - pos.z * 16.0);
+    pos.x += w * 0.032 * uFishWiggle * tailFactor;
+    nrm = normalize(nrm + vec3(0.0, 0.0, cos(uTime * 15.0 - pos.z * 16.0) * 0.18 * uFishWiggle * tailFactor));
+  }
+  if (uMatType == 10) {
+    // Gentle sunlit breeze on coastal grass blades
+    float sway = pos.y * pos.y;
+    vec4 wp0 = uModel * vec4(0.0, 0.0, 0.0, 1.0);
+    pos.x += sin(uTime * 2.1 + wp0.x * 1.7 + wp0.z) * 0.065 * sway;
+    pos.z += cos(uTime * 1.7 + wp0.z * 2.1) * 0.04 * sway;
+  }
+  vec4 world = uModel * vec4(pos, 1.0);
+  vWorldPos = world.xyz;
+  vLocalPos = pos;
+  vNormal = normalize(uNormalMat * nrm);
+  vUV = aUV;
+  vColor = aColor;
+  vLightPos = uLightViewProj * vec4(world.xyz + vNormal * 0.025, 1.0);
+  gl_Position = uViewProj * world;
+}`,
+`#version 300 es
+precision highp float;
+
+in vec3 vWorldPos;
+in vec3 vLocalPos;
+in vec3 vNormal;
+in vec2 vUV;
+in vec3 vColor;
+in vec4 vLightPos;
+
+uniform sampler2D uShadowMap;
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform float uTime;
+uniform int uMatType;
+uniform vec3 uBaseColor;
+uniform float uRoughness;
+uniform float uMetalness;
+uniform float uWetness;
+uniform float uVariant;
+uniform float uPenguinSeed;
+
+out vec4 fragColor;
+
+const float PI = 3.14159265;
+
+float hash31(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+float noise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  vec3 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(hash31(i), hash31(i + vec3(1,0,0)), u.x),
+        mix(hash31(i + vec3(0,1,0)), hash31(i + vec3(1,1,0)), u.x), u.y),
+    mix(mix(hash31(i + vec3(0,0,1)), hash31(i + vec3(1,0,1)), u.x),
+        mix(hash31(i + vec3(0,1,1)), hash31(i + vec3(1,1,1)), u.x), u.y),
+    u.z
+  );
+}
+float fbm3(vec3 p) {
+  return noise3(p) * 0.55 + noise3(p * 2.13 + 7.3) * 0.30 + noise3(p * 4.27 - 3.1) * 0.15;
+}
+
+// Animated underwater sun caustics
+float causticPattern(vec2 p, float t) {
+  vec2 p1 = p * 2.3 + vec2(t * 0.42, t * 0.28);
+  vec2 p2 = p * 2.9 - vec2(t * 0.33, -t * 0.45);
+  float a = sin(p1.x + sin(p1.y * 1.4 + t * 0.8)) * cos(p1.y + cos(p1.x * 1.2 - t * 0.6));
+  float b = sin(p2.x - cos(p2.y * 1.3 - t * 0.7)) * cos(p2.y + sin(p2.x * 1.5 + t * 0.9));
+  float c = 1.0 - abs(a + b) * 0.65;
+  return pow(clamp(c, 0.0, 1.0), 3.6);
+}
+
+// 9-tap soft PCF shadow
+float calcShadow(vec4 lp) {
+  vec3 proj = lp.xyz / lp.w;
+  proj = proj * 0.5 + 0.5;
+  if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0) return 1.0;
+  float texel = 1.0 / 2048.0;
+  float sum = 0.0;
+  float bias = 0.0014;
+  for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+      float d = texture(uShadowMap, proj.xy + vec2(float(x), float(y)) * texel * 1.35).r;
+      sum += (proj.z - bias <= d) ? 1.0 : 0.0;
+    }
+  }
+  return sum / 9.0;
+}
+
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(uCamPos - vWorldPos);
+  vec3 L = normalize(uSunDir);
+
+  vec3 albedo = uBaseColor * vColor;
+  float rough = uRoughness;
+  float metal = uMetalness;
+  float velvet = 0.0;
+  float emissiveBoost = 0.0;
+
+  // --- Material 1: Coastal Limestone Rock & Turquoise Pool Floor ---
+  if (uMatType == 1) {
+    float nLarge = fbm3(vWorldPos * 0.85);
+    float nMed = fbm3(vWorldPos * 3.4);
+    float nFine = noise3(vWorldPos * 14.0);
+    // Subtle procedural rock normal perturbation
+    vec3 bump = vec3(
+      fbm3(vWorldPos * 4.2 + vec3(0.05, 0, 0)) - nMed,
+      0.0,
+      fbm3(vWorldPos * 4.2 + vec3(0, 0, 0.05)) - nMed
+    );
+    N = normalize(N - bump * 0.55);
+
+    // Warm sunlit coastal sandstone/limestone rock
+    vec3 rockDryLight = vec3(0.76, 0.69, 0.58);
+    vec3 rockDryDark  = vec3(0.46, 0.44, 0.41);
+    vec3 rockCol = mix(rockDryDark, rockDryLight, smoothstep(0.22, 0.78, nLarge * 0.65 + nMed * 0.35));
+    // Subtle rock strata bands
+    float strata = sin(vWorldPos.y * 11.0 + nLarge * 4.0) * 0.5 + 0.5;
+    rockCol *= mix(0.88, 1.06, strata);
+    rockCol *= mix(0.92, 1.08, nFine);
+
+    // Pool floor bright aquamarine-sand transition below water
+    vec3 poolSand = mix(vec3(0.44, 0.72, 0.75), vec3(0.62, 0.84, 0.84), nMed);
+    float floorMask = smoothstep(-0.18, -0.58, vWorldPos.y);
+    albedo = mix(rockCol, poolSand, floorMask);
+    rough = mix(0.84, 0.72, floorMask);
+
+    // Wet coastal zone near waterline (darkened + glossy!)
+    float wetBand = smoothstep(0.28, -0.02, vWorldPos.y) * (1.0 - floorMask * 0.7);
+    float waveLap = sin(vWorldPos.x * 2.5 + uTime * 2.1) * 0.02;
+    float wet = clamp(wetBand + smoothstep(0.16 + waveLap, -0.04, vWorldPos.y) * 0.5, 0.0, 1.0);
+    albedo = mix(albedo, albedo * vec3(0.56, 0.59, 0.62), wet * 0.72);
+    rough = mix(rough, 0.16, wet);
+  }
+
+  // --- Material 2: Cape Penguin Body Plumage (Authentic Markings!) ---
+  else if (uMatType == 2) {
+    vec3 lp = vLocalPos;
+    float featherMicro = noise3(lp * 72.0 + vec3(0.0, uPenguinSeed * 7.0, 0.0));
+    vec3 darkFeather = mix(vec3(0.032, 0.036, 0.046), vec3(0.055, 0.062, 0.075), featherMicro);
+    vec3 whiteFeather = mix(vec3(0.86, 0.85, 0.82), vec3(0.95, 0.94, 0.91), featherMicro);
+
+    // White belly front (+z in local penguin body space)
+    float chestBoundary = 0.015 + 0.05 * smoothstep(0.18, 0.58, lp.y) - 0.03 * smoothstep(0.25, 0.02, lp.y);
+    float bellyMask = smoothstep(chestBoundary - 0.022, chestBoundary + 0.022, lp.z);
+    // Keep very top of shoulders dark
+    bellyMask *= (1.0 - smoothstep(0.62, 0.71, lp.y));
+
+    // Iconic Cape Penguin black upside-down horseshoe stripe across chest & flanks!
+    float hsTop = 0.50;
+    float hsWidth = 0.155;
+    float dx = lp.x / hsWidth;
+    float dy = (lp.y - hsTop) / 0.105;
+    // Upper arch across chest
+    float archDist = abs(sqrt(dx * dx + max(0.0, dy) * max(0.0, dy)) - 1.0);
+    float archBand = (lp.y > hsTop - 0.02 && lp.z > 0.05) ? (1.0 - smoothstep(0.12, 0.25, archDist)) : 0.0;
+    // Two vertical flank stripes running down sides of belly
+    float flankStripe = (lp.y <= hsTop && lp.y > 0.08 && lp.z > 0.02)
+      ? (1.0 - smoothstep(0.014, 0.032, abs(abs(lp.x) - hsWidth))) : 0.0;
+    float horseshoe = clamp(max(archBand, flankStripe), 0.0, 1.0);
+
+    // Cute unique black speckle spots on belly (unique per penguin!)
+    float spots = 0.0;
+    if (lp.z > 0.08 && lp.y > 0.12 && lp.y < 0.44 && abs(lp.x) < 0.125) {
+      vec3 sp = vec3(lp.x * 26.0 + uPenguinSeed * 13.7, lp.y * 26.0 + uPenguinSeed * 5.3, lp.z * 14.0);
+      vec3 cell = floor(sp);
+      vec3 f = fract(sp) - 0.5;
+      float r = hash31(cell + vec3(uPenguinSeed * 11.0));
+      if (r > 0.76) {
+        vec3 off = vec3(hash31(cell+1.1)-0.5, hash31(cell+2.3)-0.5, 0.0) * 0.45;
+        float d = length((f - off).xy);
+        spots = 1.0 - smoothstep(0.16, 0.26, d);
+      }
+    }
+
+    float whiteAmt = bellyMask * (1.0 - horseshoe * 0.96) * (1.0 - spots * 0.92);
+    albedo = mix(darkFeather, whiteFeather, whiteAmt);
+    rough = mix(0.68, 0.22, uWetness);
+    velvet = mix(0.45, 0.10, uWetness);
+  }
+
+  // --- Material 3: Cape Penguin Head (White C-Stripe + Rosy Pink Eye Gland!) ---
+  else if (uMatType == 3) {
+    vec3 lp = vLocalPos;
+    float featherMicro = noise3(lp * 85.0);
+    vec3 darkHead = mix(vec3(0.032, 0.036, 0.048), vec3(0.058, 0.064, 0.078), featherMicro);
+    vec3 whiteBand = mix(vec3(0.89, 0.88, 0.85), vec3(0.96, 0.95, 0.93), featherMicro);
+    vec3 pinkPatch = vec3(0.84, 0.42, 0.48); // Cute rosy-pink Cape Penguin bare skin above eye!
+
+    float ax = abs(lp.x);
+    // Authentic Cape Penguin white C-shaped facial band:
+    // arcs over the pink brow patch, behind the black cheek, and wraps forward into the white throat!
+    vec2 cheekC = vec2(0.065, 0.008); // (z, y) center of black cheek patch
+    vec2 dzy = vec2(lp.z - cheekC.x, lp.y - cheekC.y);
+    float rad = length(dzy);
+    float ring = 1.0 - smoothstep(0.020, 0.036, abs(rad - 0.088));
+    // Cut open the front of the C-ring around eye/beak so the face mask stays crisp black
+    float openFront = 1.0 - smoothstep(0.095, 0.125, lp.z) * (1.0 - smoothstep(0.055, 0.085, lp.y));
+    float sideMask = smoothstep(0.052, 0.095, ax);
+    // Keep very top crown crisp black
+    float crownKeep = 1.0 - smoothstep(0.105, 0.128, lp.y);
+    // Extend white band smoothly down the lower throat & neck sides
+    float throatWhite = smoothstep(-0.045, -0.095, lp.y) * smoothstep(-0.03, 0.06, lp.z) * (1.0 - smoothstep(0.04, 0.08, -lp.z));
+    float whiteAmt = clamp(max(ring * openFront * sideMask * crownKeep, throatWhite * 0.96), 0.0, 1.0);
+    // Keep chin directly beneath beak crisp black
+    float chinMask = smoothstep(0.075, 0.125, lp.z) * smoothstep(0.02, -0.055, lp.y) * (1.0 - smoothstep(0.055, 0.088, ax));
+    whiteAmt *= (1.0 - chinMask);
+
+    // Authentic rosy-pink supraorbital gland patch nestled right above each eye!
+    float pinkDist = length(vec3((ax - 0.108) * 1.15, (lp.y - 0.054) * 1.9, (lp.z - 0.094) * 1.3));
+    float pinkAmt = 1.0 - smoothstep(0.026, 0.043, pinkDist);
+
+    albedo = mix(darkHead, whiteBand, whiteAmt);
+    albedo = mix(albedo, pinkPatch, pinkAmt);
+    rough = mix(0.66, 0.24, uWetness);
+    rough = mix(rough, 0.48, pinkAmt);
+    velvet = mix(0.42, 0.10, uWetness) * (1.0 - pinkAmt);
+  }
+
+  // --- Material 4: Cape Penguin Beak (Slate + Pale Silver Tip Band) ---
+  else if (uMatType == 4) {
+    float band = 1.0 - smoothstep(0.014, 0.028, abs(vLocalPos.z - 0.085));
+    vec3 darkBeak = vec3(0.055, 0.060, 0.072);
+    vec3 paleBand = vec3(0.48, 0.49, 0.51);
+    albedo = mix(darkBeak, paleBand, band * 0.85);
+    // Rosy inside of mouth when open
+    if (vColor.r > 0.85 && vColor.g < 0.6) {
+      albedo = vec3(0.82, 0.38, 0.44);
+      rough = 0.35;
+    } else {
+      rough = 0.28;
+    }
+  }
+
+  // --- Material 5: Glossy Sparkle Eye ---
+  else if (uMatType == 5) {
+    albedo = vec3(0.015, 0.012, 0.018);
+    rough = 0.04;
+    metal = 0.05;
+    // Crisp sky/sun catchlight dot so penguins always have sparkling soulful eyes
+    vec3 H = normalize(L + V);
+    float catchlight = pow(max(dot(N, H), 0.0), 180.0);
+    vec3 H2 = normalize(normalize(vec3(-0.4, 0.8, 0.6)) + V);
+    float catchlight2 = pow(max(dot(N, H2), 0.0), 90.0);
+    emissiveBoost = catchlight * 1.6 + catchlight2 * 0.55;
+  }
+
+  // --- Material 6: Shimmering Iridescent Fish Scales ---
+  else if (uMatType == 6) {
+    float scalePat = sin(vLocalPos.z * 210.0) * sin(vLocalPos.y * 230.0 + vLocalPos.z * 105.0);
+    float scaleSparkle = smoothstep(0.15, 0.95, scalePat);
+    float dorsal = smoothstep(-0.01, 0.048, vLocalPos.y);
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+
+    vec3 bellyCol, backCol, iridCol;
+    if (uVariant < 0.5) {
+      // Classic silver-blue sardine
+      bellyCol = vec3(0.84, 0.89, 0.93);
+      backCol  = vec3(0.10, 0.25, 0.44);
+      iridCol  = vec3(0.45, 0.88, 1.0);
+    } else if (uVariant < 1.5) {
+      // Sakura rose-gold baby sea bream
+      bellyCol = vec3(0.98, 0.86, 0.88);
+      backCol  = vec3(0.92, 0.42, 0.56);
+      iridCol  = vec3(1.0, 0.82, 0.55);
+    } else if (uVariant < 2.5) {
+      // Plump emerald-silver mackerel with wavy back stripes
+      float stripe = smoothstep(0.2, 0.8, sin(vLocalPos.z * 115.0 + sin(vLocalPos.y * 80.0) * 1.4));
+      bellyCol = vec3(0.86, 0.92, 0.90);
+      backCol  = mix(vec3(0.07, 0.30, 0.34), vec3(0.16, 0.46, 0.44), stripe);
+      iridCol  = vec3(0.55, 0.98, 0.82);
+    } else {
+      // Rainbow mother-of-pearl smelt!
+      float ph = vLocalPos.z * 20.0 + uTime * 2.5 + fres * 4.5;
+      bellyCol = vec3(0.95, 0.94, 0.98);
+      backCol  = 0.55 + 0.42 * cos(ph + vec3(0.0, 2.1, 4.2));
+      iridCol  = 0.65 + 0.35 * cos(ph * 1.3 + vec3(1.0, 3.1, 5.2));
+    }
+    albedo = mix(bellyCol, backCol, dorsal);
+    albedo = mix(albedo, iridCol, fres * 0.55 + scaleSparkle * 0.16);
+    // Tiny dark shiny eye on fish head (+z)
+    float eyeD = length(vec2((vLocalPos.z - 0.115), (vLocalPos.y - 0.012)));
+    float eyeM = 1.0 - smoothstep(0.011, 0.017, eyeD);
+    albedo = mix(albedo, vec3(0.02, 0.02, 0.03), eyeM);
+    rough = mix(0.16, 0.07, scaleSparkle);
+    metal = 0.72 * (1.0 - eyeM);
+  }
+
+  // --- Material 7: Galvanized Metal Fish Bucket ---
+  else if (uMatType == 7) {
+    float grain = noise3(vec3(vLocalPos.x * 16.0, vLocalPos.y * 42.0, vLocalPos.z * 16.0));
+    float spangle = noise3(floor(vLocalPos * 18.0));
+    albedo = mix(vec3(0.58, 0.63, 0.68), vec3(0.76, 0.80, 0.84), grain * 0.5 + spangle * 0.5);
+    // Soft blue-white enamel stripe near top
+    float rimStripe = 1.0 - smoothstep(0.01, 0.02, abs(vLocalPos.y - 0.40));
+    albedo = mix(albedo, vec3(0.18, 0.48, 0.76), rimStripe * 0.85);
+    rough = mix(0.28, 0.38, spangle);
+    metal = mix(0.78, 0.25, rimStripe);
+  }
+
+  // --- Material 8: Sunny Pastel Beach Ball ---
+  else if (uMatType == 8) {
+    float a = atan(vLocalPos.z, vLocalPos.x) + PI;
+    int seg = int(floor(a / (PI / 3.0))) % 6;
+    vec3 c = vec3(0.96, 0.96, 0.95);
+    if (seg == 0) c = vec3(0.97, 0.46, 0.56);      // coral-pink
+    else if (seg == 2) c = vec3(0.32, 0.78, 0.94); // sky-aqua
+    else if (seg == 4) c = vec3(0.99, 0.82, 0.34); // sunny buttercup
+    // Polar caps
+    if (abs(vLocalPos.y) > 0.225) c = vec3(0.98, 0.97, 0.95);
+    albedo = c;
+    rough = 0.14;
+    metal = 0.02;
+  }
+
+  // --- Material 9: Pearlescent Seashell / Coral / Sea-glass Gifts ---
+  else if (uMatType == 9) {
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 2.4);
+    vec3 pearl = 0.65 + 0.35 * cos(fres * 5.0 + uTime * 1.4 + uVariant * 2.1 + vec3(0.0, 2.0, 4.0));
+    albedo = mix(albedo, pearl, fres * 0.55);
+    rough = 0.16;
+    metal = 0.18;
+  }
+
+  // --- Material 10: Sunlit Coastal Grass ---
+  else if (uMatType == 10) {
+    albedo = mix(vec3(0.14, 0.34, 0.15), vec3(0.34, 0.56, 0.20), clamp(vLocalPos.y * 1.7, 0.0, 1.0));
+    rough = 0.55;
+  }
+
+  // --- Cook-Torrance GGX PBR Lighting ---
+  vec3 F0 = mix(vec3(0.04), albedo, metal);
+  vec3 H = normalize(L + V);
+  float NdotL = max(dot(N, L), 0.0);
+  float NdotV = max(dot(N, V), 0.001);
+  float NdotH = max(dot(N, H), 0.0);
+  float HdotV = max(dot(H, V), 0.0);
+
+  float alpha = max(rough * rough, 0.002);
+  float a2 = alpha * alpha;
+  float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+  float D = a2 / (PI * denom * denom);
+  float k = (rough + 1.0);
+  k = (k * k) / 8.0;
+  float G = (NdotV / (NdotV * (1.0 - k) + k)) * (NdotL / (NdotL * (1.0 - k) + k));
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
+  vec3 spec = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+  vec3 kD = (1.0 - F) * (1.0 - metal);
+
+  float shadow = calcShadow(vLightPos);
+  vec3 sunColor = vec3(2.85, 2.72, 2.46);
+  vec3 direct = (kD * albedo / PI + spec) * sunColor * NdotL * shadow;
+
+  // Hemisphere sky / aqua-bounce ambient + soft rim
+  float skyFactor = N.y * 0.5 + 0.5;
+  vec3 skyAmb = vec3(0.54, 0.78, 1.05);
+  vec3 bounceAmb = vec3(0.34, 0.52, 0.56); // turquoise water + warm limestone bounce
+  vec3 ambient = albedo * mix(bounceAmb, skyAmb, skyFactor) * 0.52;
+
+  // Specular sky reflection for glossy/metallic/wet materials
+  vec3 R = reflect(-V, N);
+  vec3 envSky = mix(vec3(0.45, 0.74, 0.88), vec3(0.28, 0.60, 0.96), clamp(R.y * 0.8 + 0.2, 0.0, 1.0));
+  vec3 envF = F0 + (max(vec3(1.0 - rough), F0) - F0) * pow(1.0 - NdotV, 5.0);
+  ambient += envSky * envF * (1.0 - rough * 0.72) * 0.52;
+
+  // Soft sunlit velvet rim on penguin feathers
+  if (velvet > 0.01) {
+    float rim = pow(1.0 - NdotV, 3.2) * (0.45 + 0.55 * max(dot(N, L), 0.0));
+    ambient += vec3(0.72, 0.86, 1.0) * rim * velvet * 0.26;
+  }
+
+  vec3 color = direct + ambient + vec3(emissiveBoost);
+
+  // --- Underwater Caustics & Turquoise Water Absorption ---
+  if (vWorldPos.y < 0.02) {
+    float depth = max(0.0, -vWorldPos.y);
+    float c1 = causticPattern(vWorldPos.xz + vWorldPos.y * L.xz * 0.35, uTime);
+    float causticFade = exp(-depth * 0.45) * smoothstep(0.02, -0.08, vWorldPos.y);
+    color += vec3(0.55, 0.96, 1.0) * c1 * causticFade * (0.35 + 0.65 * shadow) * 0.85;
+    // Beer-Lambert clear turquoise aquarium water absorption
+    vec3 absorb = exp(-depth * vec3(0.42, 0.14, 0.08));
+    vec3 waterScatter = vec3(0.08, 0.48, 0.60);
+    color = color * absorb + waterScatter * (1.0 - absorb) * 0.62;
+  }
+
+  // Gentle sunny atmospheric depth haze for distant back rocks
+  float camDist = length(uCamPos - vWorldPos);
+  float haze = smoothstep(10.0, 26.0, camDist) * 0.35;
+  color = mix(color, vec3(0.72, 0.88, 0.98), haze);
+
+  color = pow(aces(color), vec3(1.0 / 2.2));
+  fragColor = vec4(color, 1.0);
+}`
+);
+const pbrU = getUniforms(pbrProg, [
+  'uModel', 'uViewProj', 'uNormalMat', 'uLightViewProj', 'uShadowMap',
+  'uCamPos', 'uSunDir', 'uTime', 'uMatType', 'uBaseColor',
+  'uRoughness', 'uMetalness', 'uWetness', 'uVariant', 'uPenguinSeed', 'uFishWiggle'
+]);
+
+// --- 4D. Crystal-Clear Interactive Turquoise Water Shader ---
+const waterProg = createProgram(
+`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec3 aColor; // aColor.r stores terrain depth below water
+
+uniform mat4 uViewProj;
+uniform float uTime;
+uniform vec4 uRipples[16];
+
+out vec3 vWorldPos;
+out float vDepth;
+out float vRippleSum;
+
+void main() {
+  vec3 pos = aPos;
+  float depth = aColor.r;
+  float edgeDamp = smoothstep(-0.08, 0.35, depth);
+
+  // Gentle sunlit pool swells
+  float w = sin(pos.x * 1.9 + uTime * 1.9) * 0.011
+          + cos(pos.z * 2.3 - uTime * 1.65) * 0.009
+          + sin((pos.x + pos.z) * 3.2 + uTime * 2.6) * 0.006;
+
+  // Interactive expanding circular ripples
+  float rSum = 0.0;
+  for (int i = 0; i < 16; i++) {
+    vec4 r = uRipples[i];
+    float age = uTime - r.z;
+    if (r.w > 0.001 && age >= 0.0 && age < 2.6) {
+      float d = length(pos.xz - r.xy);
+      float radius = age * 2.15;
+      float ring = exp(-pow((d - radius) * 2.8, 2.0));
+      float fade = exp(-age * 1.15) * r.w;
+      float wave = sin((d - radius) * 14.0) * ring * fade;
+      w += wave * 0.045;
+      rSum += abs(wave) * 1.8;
+    }
+  }
+
+  pos.y += w * edgeDamp;
+  vWorldPos = pos;
+  vDepth = depth;
+  vRippleSum = rSum;
+  gl_Position = uViewProj * vec4(pos, 1.0);
+}`,
+`#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in float vDepth;
+in float vRippleSum;
+
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform float uTime;
+uniform vec4 uRipples[16];
+
+out vec4 fragColor;
+
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+float waveHeight(vec2 p, float t) {
+  float h = 0.0;
+  h += sin(p.x * 2.6 + p.y * 1.2 + t * 2.2) * 0.014;
+  h += cos(p.x * 1.8 - p.y * 3.1 + t * 1.9) * 0.012;
+  h += sin(p.x * 5.2 + p.y * 4.4 - t * 3.4) * 0.0055;
+  h += cos(p.x * 7.8 - p.y * 6.3 + t * 4.2) * 0.0032;
+  for (int i = 0; i < 16; i++) {
+    vec4 r = uRipples[i];
+    float age = t - r.z;
+    if (r.w > 0.001 && age >= 0.0 && age < 2.6) {
+      float d = length(p - r.xy);
+      float rad = age * 2.15;
+      float ring = exp(-pow((d - rad) * 2.8, 2.0));
+      float fade = exp(-age * 1.15) * r.w;
+      h += sin((d - rad) * 14.0) * ring * fade * 0.042;
+    }
+  }
+  return h;
+}
+
+void main() {
+  if (vDepth < -0.05) discard;
+  vec2 p = vWorldPos.xz;
+  float e = 0.035;
+  float hC = waveHeight(p, uTime);
+  float hX = waveHeight(p + vec2(e, 0.0), uTime);
+  float hZ = waveHeight(p + vec2(0.0, e), uTime);
+  vec3 N = normalize(vec3(hC - hX, e, hC - hZ));
+
+  vec3 V = normalize(uCamPos - vWorldPos);
+  vec3 L = normalize(uSunDir);
+  vec3 H = normalize(L + V);
+
+  float NdotV = max(dot(N, V), 0.001);
+  float fresnel = 0.03 + 0.97 * pow(1.0 - NdotV, 4.2);
+
+  // Sky reflection
+  vec3 R = reflect(-V, N);
+  vec3 skyRefl = mix(vec3(0.68, 0.89, 0.99), vec3(0.18, 0.56, 0.92), clamp(R.y * 1.1, 0.0, 1.0));
+  // Sparkling sun glints on water wavelets
+  float sunGlint = pow(max(dot(N, H), 0.0), 260.0) * 4.2 + pow(max(dot(N, H), 0.0), 36.0) * 0.42;
+
+  // Crystal turquoise tint
+  vec3 shallowCol = vec3(0.24, 0.84, 0.88);
+  vec3 deepCol    = vec3(0.04, 0.42, 0.62);
+  vec3 waterTint  = mix(shallowCol, deepCol, smoothstep(0.05, 1.25, vDepth));
+
+  // Delicate white foam hugging rock shoreline & lively ripples
+  float shoreFoam = smoothstep(0.16, 0.0, vDepth + sin(p.x * 5.0 + uTime * 2.5) * 0.025);
+  float rippleFoam = smoothstep(0.32, 0.95, vRippleSum) * 0.45;
+  float foam = clamp(shoreFoam * 0.68 + rippleFoam, 0.0, 0.85);
+
+  vec3 col = mix(waterTint, skyRefl, fresnel * 0.82);
+  col += vec3(1.0, 0.96, 0.86) * sunGlint;
+  col = mix(col, vec3(0.95, 0.98, 1.0), foam);
+
+  float alpha = mix(0.24, 0.66, smoothstep(0.0, 1.0, vDepth)) + fresnel * 0.28 + foam * 0.35 + min(sunGlint * 0.25, 0.3);
+  alpha *= smoothstep(-0.04, 0.04, vDepth);
+  alpha = clamp(alpha, 0.0, 0.92);
+
+  col = pow(aces(col), vec3(1.0 / 2.2));
+  fragColor = vec4(col, alpha);
+}`
+);
+const waterU = getUniforms(waterProg, ['uViewProj', 'uCamPos', 'uSunDir', 'uTime', 'uRipples']);
+
+// --- 4E. Translucent FX Shader (Splashes, Bubbles, Ice, Waterfall, Rainbow, Glass, Motes) ---
+const fxProg = createProgram(
+`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
+
+uniform mat4 uModel;
+uniform mat4 uViewProj;
+uniform mat3 uNormalMat;
+
+out vec3 vWorldPos;
+out vec3 vNormal;
+out vec2 vUV;
+
+void main() {
+  vec4 w = uModel * vec4(aPos, 1.0);
+  vWorldPos = w.xyz;
+  vNormal = normalize(uNormalMat * aNormal);
+  vUV = aUV;
+  gl_Position = uViewProj * w;
+}`,
+`#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in vec3 vNormal;
+in vec2 vUV;
+
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform float uTime;
+uniform int uFxMode;
+uniform vec4 uColor; // rgb + opacity
+
+out vec4 fragColor;
+
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(uCamPos - vWorldPos);
+  vec3 L = normalize(uSunDir);
+  vec3 H = normalize(L + V);
+  float NdotV = abs(dot(N, V));
+  float fres = pow(1.0 - clamp(NdotV, 0.0, 1.0), 3.0);
+  float spec = pow(max(dot(N, H), 0.0), 96.0);
+
+  vec3 col = uColor.rgb;
+  float alpha = uColor.a;
+
+  if (uFxMode == 0) {
+    // Water droplet or glossy ice cube
+    col = mix(uColor.rgb, vec3(0.95, 0.99, 1.0), fres * 0.72) + vec3(1.5, 1.48, 1.42) * spec;
+    alpha = clamp(uColor.a * (0.45 + fres * 0.55 + spec * 0.4), 0.0, 0.96);
+  } else if (uFxMode == 1) {
+    // Iridescent soap / air bubble!
+    vec3 irid = 0.62 + 0.38 * cos(fres * 6.5 + uTime * 2.2 + vWorldPos.y * 2.0 + vec3(0.0, 2.1, 4.2));
+    col = mix(vec3(0.75, 0.95, 1.0), irid, 0.75) + vec3(1.8) * pow(max(dot(N, H), 0.0), 140.0);
+    alpha = clamp(uColor.a * (0.14 + fres * 0.82 + spec * 0.8), 0.0, 0.92);
+  } else if (uFxMode == 2) {
+    // Cascading sunlit waterfall ribbon
+    float flow1 = sin(vUV.y * 24.0 - uTime * 11.0 + sin(vUV.x * 9.0) * 1.2) * 0.5 + 0.5;
+    float flow2 = sin(vUV.y * 42.0 - uTime * 16.5 - vUV.x * 14.0) * 0.5 + 0.5;
+    float edge = smoothstep(0.0, 0.22, vUV.x) * smoothstep(1.0, 0.78, vUV.x);
+    float foam = smoothstep(0.35, 0.88, flow1 * 0.6 + flow2 * 0.4) + smoothstep(0.72, 1.0, vUV.y) * 0.5;
+    col = mix(vec3(0.42, 0.86, 0.96), vec3(0.98, 0.99, 1.0), clamp(foam, 0.0, 1.0));
+    col += vec3(0.9, 0.95, 1.0) * spec * 0.5;
+    alpha = edge * (0.42 + foam * 0.48) * uColor.a;
+  } else if (uFxMode == 3) {
+    // Soft optical sunlit rainbow arc in waterfall mist!
+    float t = vUV.y; // radial across rainbow band (0..1)
+    float along = smoothstep(0.0, 0.22, vUV.x) * smoothstep(1.0, 0.78, vUV.x);
+    float bandFade = smoothstep(0.0, 0.2, t) * smoothstep(1.0, 0.8, t);
+    // Spectral palette (violet -> blue -> cyan -> green -> yellow -> orange -> rose)
+    vec3 rCol = 0.55 + 0.45 * cos(6.28318 * (vec3(0.78, 0.50, 0.24) - t * 0.82));
+    col = rCol * 1.15;
+    alpha = along * bandFade * uColor.a * 0.58;
+  } else if (uFxMode == 4) {
+    // Aquarium tempered glass railing
+    col = mix(vec3(0.66, 0.88, 0.96), vec3(0.96, 0.99, 1.0), fres * 0.85) + vec3(1.2) * spec * 0.6;
+    float border = smoothstep(0.03, 0.0, vUV.y) + smoothstep(0.97, 1.0, vUV.y);
+    alpha = clamp(0.14 + fres * 0.38 + border * 0.32, 0.0, 0.65);
+  } else {
+    // Warm sunlit sparkle mote
+    col = uColor.rgb * 1.45;
+    alpha = uColor.a;
+  }
+
+  col = pow(aces(col), vec3(1.0 / 2.2));
+  fragColor = vec4(col, alpha);
+}`
+);
+const fxU = getUniforms(fxProg, ['uModel', 'uViewProj', 'uNormalMat', 'uCamPos', 'uSunDir', 'uTime', 'uFxMode', 'uColor']);
+
+// ============================================================================
+// 5. SHADOW FRAMEBUFFER SETUP (2048x2048)
+// ============================================================================
+const SHADOW_SIZE = 2048;
+const shadowTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const shadowFBO = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+gl.drawBuffers([gl.NONE]);
+gl.readBuffer(gl.NONE);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+// ============================================================================
+// 6. PROCEDURAL 3D MESH BUILDERS
+// ============================================================================
+function createMesh(positions, normals, uvs, colors, indices) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  const bindBuf = (loc, arr, size) => {
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+  };
+  bindBuf(0, positions, 3);
+  bindBuf(1, normals, 3);
+  bindBuf(2, uvs, 2);
+  bindBuf(3, colors, 3);
+
+  const ebo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+  const use32 = positions.length / 3 > 65530;
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, use32 ? new Uint32Array(indices) : new Uint16Array(indices), gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+
+  return { vao, count: indices.length, indexType: use32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT };
+}
+
+function computeSmoothNormals(pos, idx) {
+  const nrm = new Float32Array(pos.length);
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = idx[i]*3, b = idx[i+1]*3, c = idx[i+2]*3;
+    const ux = pos[b]-pos[a], uy = pos[b+1]-pos[a+1], uz = pos[b+2]-pos[a+2];
+    const vx = pos[c]-pos[a], vy = pos[c+1]-pos[a+1], vz = pos[c+2]-pos[a+2];
+    const nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    nrm[a]+=nx; nrm[a+1]+=ny; nrm[a+2]+=nz;
+    nrm[b]+=nx; nrm[b+1]+=ny; nrm[b+2]+=nz;
+    nrm[c]+=nx; nrm[c+1]+=ny; nrm[c+2]+=nz;
+  }
+  for (let i = 0; i < nrm.length; i += 3) {
+    const l = Math.hypot(nrm[i], nrm[i+1], nrm[i+2]) || 1;
+    nrm[i]/=l; nrm[i+1]/=l; nrm[i+2]/=l;
+  }
+  return nrm;
+}
+
+function buildSphere(rad = 1, rings = 16, segs = 24, sx = 1, sy = 1, sz = 1, col = [1,1,1]) {
+  const pos = [], nrm = [], uv = [], color = [], idx = [];
+  for (let r = 0; r <= rings; r++) {
+    const v = r / rings;
+    const phi = v * Math.PI;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const th = u * Math.PI * 2;
+      const x = Math.cos(th) * sp, y = cp, z = Math.sin(th) * sp;
+      pos.push(x * rad * sx, y * rad * sy, z * rad * sz);
+      const nn = V3.norm([x / sx, y / sy, z / sz]);
+      nrm.push(nn[0], nn[1], nn[2]);
+      uv.push(u, v);
+      color.push(col[0], col[1], col[2]);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s;
+      const i1 = i0 + segs + 1;
+      idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1);
+    }
+  }
+  return createMesh(pos, nrm, uv, color, idx);
+}
+
+// Sculpted Cape Penguin Body (plump adorable teardrop with smooth organic posture)
+function buildPenguinBody() {
+  const rings = 26, segs = 32;
+  const pos = [], uv = [], col = [], idx = [];
+  for (let r = 0; r <= rings; r++) {
+    const t = r / rings; // 0 = bottom, 1 = neck top
+    const y = t * 0.72;
+    // Plump penguin silhouette profile
+    let rx, rz, zOff;
+    if (t < 0.05) {
+      const k = Math.sin((t / 0.05) * Math.PI * 0.5);
+      rx = 0.14 * k; rz = 0.14 * k; zOff = 0.0;
+    } else if (t < 0.95) {
+      const s = (t - 0.05) / 0.90;
+      const belly = Math.sin(Math.pow(s, 0.72) * Math.PI);
+      rx = 0.095 + belly * 0.155;
+      rz = 0.095 + belly * 0.172;
+      zOff = Math.sin(s * Math.PI) * 0.028 - s * 0.015;
+    } else {
+      const k = Math.cos(((t - 0.95) / 0.05) * Math.PI * 0.5);
+      rx = 0.115 * k; rz = 0.115 * k; zOff = -0.01;
+    }
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const a = u * Math.PI * 2;
+      const x = Math.sin(a) * rx;
+      const z = Math.cos(a) * rz + zOff;
+      pos.push(x, y, z);
+      uv.push(u, t);
+      col.push(1, 1, 1);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Sculpted Cape Penguin Head (round adorable head with gentle cheeks & brow)
+function buildPenguinHead() {
+  const rings = 20, segs = 28;
+  const pos = [], uv = [], col = [], idx = [];
+  for (let r = 0; r <= rings; r++) {
+    const v = r / rings;
+    const phi = v * Math.PI;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const a = u * Math.PI * 2;
+      let x = Math.sin(a) * sp * 0.158;
+      let y = cp * 0.148;
+      let z = Math.cos(a) * sp * 0.172;
+      // Slightly fuller cute lower cheeks & forehead taper
+      if (y < 0) { x *= 1.05; z *= 1.04; }
+      if (z > 0.05) { x *= 0.92; y *= 0.96; }
+      pos.push(x, y, z);
+      uv.push(u, v);
+      col.push(1, 1, 1);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Articulated Upper / Lower Beak Mandible
+function buildBeakHalf(isUpper) {
+  const segs = 14, rings = 8;
+  const pos = [], uv = [], col = [], idx = [];
+  const sign = isUpper ? 1 : -1;
+  const len = isUpper ? 0.155 : 0.138;
+  for (let r = 0; r <= rings; r++) {
+    const t = r / rings; // 0 = base, 1 = tip
+    const z = t * len;
+    const w = (1 - Math.pow(t, 1.35)) * (isUpper ? 0.044 : 0.037);
+    const h = (1 - Math.pow(t, 1.25)) * (isUpper ? 0.036 : 0.025);
+    // Gentle downward curve on upper beak tip
+    const yCurve = isUpper ? -Math.pow(t, 2.4) * 0.022 : -Math.pow(t, 2.0) * 0.008;
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      let x, y, inner = false;
+      if (s <= segs * 0.65) {
+        const k = s / (segs * 0.65);
+        const ang = k * Math.PI;
+        x = Math.cos(ang) * w;
+        y = Math.sin(ang) * h * sign + yCurve;
+      } else {
+        const k = (s - segs * 0.65) / (segs * 0.35);
+        x = lerp(-w, w, k);
+        y = yCurve;
+        inner = true;
+      }
+      pos.push(x, y, z);
+      uv.push(u, t);
+      if (inner && t < 0.82) col.push(0.95, 0.45, 0.50);
+      else col.push(1, 1, 1);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      if (isUpper) idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1);
+      else idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Curved Eyelid Shell (upper or lower)
+function buildEyelid(isUpper) {
+  const rings = 7, segs = 14;
+  const pos = [], uv = [], col = [], idx = [];
+  const rad = 0.0355;
+  for (let r = 0; r <= rings; r++) {
+    const v = r / rings;
+    const phi = isUpper ? lerp(0.05, Math.PI * 0.52, v) : lerp(Math.PI * 0.48, Math.PI - 0.05, v);
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const a = lerp(-Math.PI * 0.65, Math.PI * 0.65, u);
+      pos.push(Math.sin(a) * sp * rad, cp * rad, Math.cos(a) * sp * rad);
+      uv.push(u, v);
+      col.push(0.05, 0.055, 0.07);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Sculpted Hydrodynamic Penguin Flipper (black outside, crisp white inner edge!)
+function buildPenguinFlipper(side) {
+  const rings = 12, segs = 14;
+  const pos = [], uv = [], col = [], idx = [];
+  for (let r = 0; r <= rings; r++) {
+    const t = r / rings; // 0 = shoulder, 1 = flipper tip
+    const y = -t * 0.34;
+    const chord = (0.042 + Math.sin(Math.pow(t, 0.72) * Math.PI) * 0.056) * (1 - t * 0.25);
+    const thick = (0.019 * (1 - t * 0.65)) + 0.004;
+    const zCurve = -Math.sin(t * Math.PI) * 0.038 - t * 0.025;
+    const xCurve = side * (0.012 + Math.sin(t * Math.PI * 0.85) * 0.028);
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const a = u * Math.PI * 2;
+      const lx = Math.cos(a) * thick;
+      const lz = Math.sin(a) * chord;
+      pos.push(lx + xCurve, y, lz + zCurve);
+      uv.push(u, t);
+      // Inner side and trailing edge are crisp white-cream!
+      const isInner = (lx * side < -0.002) || (lz < -chord * 0.62);
+      if (isInner) col.push(0.90, 0.90, 0.88);
+      else col.push(0.045, 0.05, 0.065);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Sculpted 3-Toed Webbed Penguin Foot
+function buildPenguinFoot() {
+  const pos = [], uv = [], col = [], idx = [];
+  const segs = 16;
+  // Flat webbed fan with subtle toe ridges
+  const topY = 0.024, botY = 0.0;
+  // Center ankle top & bottom
+  pos.push(0, topY + 0.012, -0.02); uv.push(0.5, 0); col.push(0.11, 0.11, 0.13);
+  pos.push(0, botY, -0.02);         uv.push(0.5, 0); col.push(0.08, 0.08, 0.10);
+  for (let s = 0; s <= segs; s++) {
+    const u = s / segs;
+    const ang = lerp(-0.68, 0.68, u);
+    const toeWave = Math.pow(Math.abs(Math.cos(u * Math.PI * 2.0)), 0.7) * 0.022;
+    const len = 0.135 + toeWave;
+    const x = Math.sin(ang) * len;
+    const z = Math.cos(ang) * len;
+    const ridge = Math.pow(Math.abs(Math.cos(u * Math.PI * 2.0)), 1.5) * 0.009;
+    pos.push(x, topY * 0.55 + ridge, z); uv.push(u, 1); col.push(0.13, 0.12, 0.14);
+    pos.push(x, botY, z);                uv.push(u, 1); col.push(0.08, 0.08, 0.10);
+  }
+  for (let s = 0; s < segs; s++) {
+    const t0 = 2 + s * 2, b0 = t0 + 1, t1 = t0 + 2, b1 = t0 + 3;
+    idx.push(0, t0, t1);
+    idx.push(1, b1, b0);
+    idx.push(t0, b0, t1, t1, b0, b1);
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Sculpted Cute Stubby Tail
+function buildPenguinTail() {
+  const rings = 6, segs = 10;
+  const pos = [], uv = [], col = [], idx = [];
+  for (let r = 0; r <= rings; r++) {
+    const t = r / rings;
+    const z = -t * 0.125;
+    const y = -t * 0.045;
+    const rx = (1 - t * 0.88) * 0.068;
+    const ry = (1 - t * 0.88) * 0.036;
+    for (let s = 0; s <= segs; s++) {
+      const a = (s / segs) * Math.PI * 2;
+      pos.push(Math.cos(a) * rx, Math.sin(a) * ry + y, z);
+      uv.push(s / segs, t);
+      col.push(0.045, 0.05, 0.065);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Realistic 3D Fish Mesh (streamlined body + forked tail + dorsal & side fins!)
+function buildFishMesh() {
+  const pos = [], uv = [], col = [], idx = [];
+  const rings = 16, segs = 14;
+  // Fusiform body from nose (+0.16) to tail base (-0.12)
+  for (let r = 0; r <= rings; r++) {
+    const t = r / rings; // 0 = nose, 1 = tail base
+    const z = lerp(0.165, -0.125, t);
+    const prof = Math.sin(Math.pow(t, 0.65) * Math.PI);
+    const rx = 0.004 + prof * 0.031;
+    const ry = 0.005 + prof * 0.052;
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const a = u * Math.PI * 2;
+      pos.push(Math.cos(a) * rx, Math.sin(a) * ry, z);
+      uv.push(u, t);
+      col.push(1, 1, 1);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  // Helper to add thin 2-sided fin triangles
+  const addFin = (pts, c = [0.85, 0.92, 0.98]) => {
+    const base = pos.length / 3;
+    for (const p of pts) {
+      pos.push(p[0], p[1], p[2]);
+      uv.push(0.5, 0.5);
+      col.push(c[0], c[1], c[2]);
+    }
+    for (let i = 1; i < pts.length - 1; i++) {
+      idx.push(base, base + i, base + i + 1);
+      idx.push(base, base + i + 1, base + i);
+    }
+  };
+  // Forked Caudal Tail Fin (upper & lower lobes)
+  addFin([[0, 0.008, -0.11], [0, 0.068, -0.215], [0, 0.002, -0.165]]);
+  addFin([[0, -0.008, -0.11], [0, 0.002, -0.165], [0, -0.064, -0.21]]);
+  // Dorsal fin
+  addFin([[0, 0.044, 0.04], [0, 0.088, -0.02], [0, 0.036, -0.065]]);
+  // Pectoral side fins
+  addFin([[0.025, -0.012, 0.06], [0.065, -0.028, 0.005], [0.022, -0.024, 0.005]]);
+  addFin([[-0.025, -0.012, 0.06], [-0.022, -0.024, 0.005], [-0.065, -0.028, 0.005]]);
+
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Galvanized Metal Fish Bucket (hollow interior + rolled lip + handle)
+function buildBucketMesh() {
+  const pos = [], uv = [], col = [], idx = [];
+  const segs = 32;
+  // Profile points [radius, y, brightness]
+  const prof = [
+    [0.0,   0.00, 0.7],
+    [0.24,  0.00, 0.8],
+    [0.25,  0.02, 0.9],
+    [0.32,  0.46, 1.0],
+    [0.342, 0.48, 1.05],
+    [0.338, 0.495, 1.0],
+    [0.315, 0.485, 0.85],
+    [0.295, 0.34, 0.55],
+    [0.245, 0.32, 0.78], // ice bed shelf inside
+    [0.0,   0.33, 0.88]
+  ];
+  for (let r = 0; r < prof.length; r++) {
+    const [rad, y, br] = prof[r];
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const a = u * Math.PI * 2;
+      // Add subtle embossed ring ribs on outer wall
+      const rib = (r === 2 || r === 3) ? 0 : 0;
+      pos.push(Math.cos(a) * (rad + rib), y, Math.sin(a) * (rad + rib));
+      uv.push(u, r / (prof.length - 1));
+      const isIceBed = r >= 8;
+      if (isIceBed) col.push(0.76, 0.91, 0.98);
+      else col.push(br, br, br);
+    }
+  }
+  for (let r = 0; r < prof.length - 1; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  // Curved wire handle resting playfully over the front-left rim
+  const hSegs = 20, tubeSegs = 8;
+  const hBase = pos.length / 3;
+  for (let i = 0; i <= hSegs; i++) {
+    const t = i / hSegs;
+    const ang = lerp(-Math.PI * 0.5, Math.PI * 0.5, t);
+    const cx = Math.sin(ang) * 0.34;
+    const cz = Math.cos(ang) * 0.25;
+    const cy = 0.43 - Math.cos(ang) * 0.16;
+    const tx = Math.cos(ang) * 0.34, tz = -Math.sin(ang) * 0.25, ty = Math.sin(ang) * 0.16;
+    const tang = V3.norm([tx, ty, tz]);
+    const up = V3.norm(V3.cross(tang, [0, 1, 0]));
+    const bin = V3.cross(tang, up);
+    for (let j = 0; j <= tubeSegs; j++) {
+      const b = (j / tubeSegs) * Math.PI * 2;
+      const rr = 0.0085;
+      pos.push(
+        cx + (up[0]*Math.cos(b) + bin[0]*Math.sin(b)) * rr,
+        cy + (up[1]*Math.cos(b) + bin[1]*Math.sin(b)) * rr,
+        cz + (up[2]*Math.cos(b) + bin[2]*Math.sin(b)) * rr
+      );
+      uv.push(t, j / tubeSegs);
+      col.push(0.85, 0.88, 0.92);
+    }
+  }
+  for (let i = 0; i < hSegs; i++) {
+    for (let j = 0; j < tubeSegs; j++) {
+      const i0 = hBase + i * (tubeSegs + 1) + j, i1 = i0 + tubeSegs + 1;
+      idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Rounded Ice Cube
+function buildIceCube() {
+  const rings = 8, segs = 12;
+  const pos = [], uv = [], col = [], idx = [];
+  for (let r = 0; r <= rings; r++) {
+    const phi = (r / rings) * Math.PI;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let s = 0; s <= segs; s++) {
+      const a = (s / segs) * Math.PI * 2;
+      const dx = Math.cos(a) * sp, dy = cp, dz = Math.sin(a) * sp;
+      // Superellipsoid (rounded cube!)
+      const sx = Math.sign(dx) * Math.pow(Math.abs(dx), 0.45);
+      const sy = Math.sign(dy) * Math.pow(Math.abs(dy), 0.45);
+      const sz = Math.sign(dz) * Math.pow(Math.abs(dz), 0.45);
+      pos.push(sx * 0.068, sy * 0.056, sz * 0.068);
+      uv.push(s / segs, r / rings);
+      col.push(0.84, 0.96, 1.0);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Sculpted Scallop Seashell Gift
+function buildShellMesh() {
+  const pos = [], uv = [], col = [], idx = [];
+  const segs = 18, rings = 7;
+  for (let r = 0; r <= rings; r++) {
+    const t = r / rings;
+    for (let s = 0; s <= segs; s++) {
+      const u = s / segs;
+      const ang = lerp(-1.05, 1.05, u);
+      const rib = Math.sin(u * Math.PI * 7.0) * 0.009 * t;
+      const rad = 0.015 + t * 0.095;
+      const x = Math.sin(ang) * rad;
+      const z = Math.cos(ang) * rad - 0.04;
+      const y = Math.sin(t * Math.PI) * 0.032 + rib + 0.008;
+      pos.push(x, y, z);
+      uv.push(u, t);
+      col.push(1.0, 0.88, 0.92);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Coastal Aquarium Terrain Mesh
+function buildTerrainMesh() {
+  const nx = 128, nz = 108;
+  const minX = -8.5, maxX = 8.5, minZ = -6.8, maxZ = 5.8;
+  const pos = [], nrm = [], uv = [], col = [], idx = [];
+  for (let j = 0; j <= nz; j++) {
+    const vz = j / nz;
+    const z = lerp(minZ, maxZ, vz);
+    for (let i = 0; i <= nx; i++) {
+      const vx = i / nx;
+      const x = lerp(minX, maxX, vx);
+      const y = getTerrainHeight(x, z);
+      const n = getTerrainNormal(x, z);
+      pos.push(x, y, z);
+      nrm.push(n[0], n[1], n[2]);
+      uv.push(vx * 8, vz * 8);
+      col.push(1, 1, 1);
+    }
+  }
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      const i0 = j * (nx + 1) + i, i1 = i0 + nx + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, nrm, uv, col, idx);
+}
+
+// Crystal Water Surface Mesh
+function buildWaterMesh() {
+  const nx = 96, nz = 76;
+  const minX = -4.8, maxX = 4.8, minZ = -3.6, maxZ = 2.6;
+  const pos = [], nrm = [], uv = [], col = [], idx = [];
+  for (let j = 0; j <= nz; j++) {
+    const vz = j / nz;
+    const z = lerp(minZ, maxZ, vz);
+    for (let i = 0; i <= nx; i++) {
+      const vx = i / nx;
+      const x = lerp(minX, maxX, vx);
+      const depth = WATER_Y - getTerrainHeight(x, z);
+      pos.push(x, WATER_Y, z);
+      nrm.push(0, 1, 0);
+      uv.push(vx, vz);
+      col.push(depth, 0, 0);
+    }
+  }
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      const i0 = j * (nx + 1) + i, i1 = i0 + nx + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, nrm, uv, col, idx);
+}
+
+// Sculpted Organic Accent Boulder
+function buildBoulder(seed = 1) {
+  const rings = 12, segs = 16;
+  const pos = [], uv = [], col = [], idx = [];
+  for (let r = 0; r <= rings; r++) {
+    const phi = (r / rings) * Math.PI;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    for (let s = 0; s <= segs; s++) {
+      const a = (s / segs) * Math.PI * 2;
+      let dx = Math.cos(a) * sp, dy = cp * 0.72, dz = Math.sin(a) * sp;
+      const n = fbm2(dx * 2.1 + seed * 7.3, dz * 2.1 + dy * 1.9 + seed * 3.1);
+      const rad = 0.78 + n * 0.36;
+      // Flatten top slightly like natural coastal limestone slabs
+      if (dy > 0.35) dy = 0.35 + (dy - 0.35) * 0.45;
+      pos.push(dx * rad, dy * rad, dz * rad);
+      uv.push(s / segs, r / rings);
+      col.push(1, 1, 1);
+    }
+  }
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segs; s++) {
+      const i0 = r * (segs + 1) + s, i1 = i0 + segs + 1;
+      idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Cascading Waterfall Ribbon Mesh
+function buildWaterfallMesh() {
+  const nx = 14, ny = 22;
+  const pos = [], uv = [], col = [], idx = [];
+  for (let j = 0; j <= ny; j++) {
+    const v = j / ny; // 0 = top lip, 1 = pool splash
+    const y = lerp(1.62, -0.05, v * v * 0.75 + v * 0.25);
+    const z = lerp(-3.18, -2.42, Math.pow(v, 0.75));
+    const halfW = lerp(0.28, 0.44, v);
+    for (let i = 0; i <= nx; i++) {
+      const u = i / nx;
+      const x = -1.35 + lerp(-halfW, halfW, u);
+      const curveZ = Math.sin(u * Math.PI) * 0.08;
+      pos.push(x, y, z + curveZ);
+      uv.push(u, v);
+      col.push(1, 1, 1);
+    }
+  }
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const i0 = j * (nx + 1) + i, i1 = i0 + nx + 1;
+      idx.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Optical Sunlit Rainbow Arc Mesh (hovers gently in waterfall mist)
+function buildRainbowArcMesh() {
+  const segs = 28;
+  const pos = [], nrm = [], uv = [], col = [], idx = [];
+  const rInner = 0.78, rOuter = 1.24;
+  for (let i = 0; i <= segs; i++) {
+    const u = i / segs;
+    const ang = lerp(Math.PI * 0.12, Math.PI * 0.88, u);
+    const c = Math.cos(ang), s = Math.sin(ang);
+    pos.push(c * rInner, s * rInner, 0); nrm.push(0, 0, 1); uv.push(u, 0); col.push(1,1,1);
+    pos.push(c * rOuter, s * rOuter, 0); nrm.push(0, 0, 1); uv.push(u, 1); col.push(1,1,1);
+  }
+  for (let i = 0; i < segs; i++) {
+    const k = i * 2;
+    idx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+  }
+  return createMesh(pos, nrm, uv, col, idx);
+}
+
+// Coastal Grass Clump
+function buildGrassClump() {
+  const pos = [], uv = [], col = [], idx = [];
+  const blades = 9;
+  for (let b = 0; b < blades; b++) {
+    const base = pos.length / 3;
+    const ang = (b / blades) * Math.PI * 2 + hash2(b, 3.1) * 0.6;
+    const h = 0.34 + hash2(b, 7.2) * 0.28;
+    const lean = 0.12 + hash2(b, 9.4) * 0.18;
+    const dx = Math.cos(ang), dz = Math.sin(ang);
+    const px = -dz, pz = dx;
+    const segs = 4;
+    for (let s = 0; s <= segs; s++) {
+      const t = s / segs;
+      const w = (1 - t * 0.85) * 0.036;
+      const cx = dx * lean * t * t;
+      const cz = dz * lean * t * t;
+      const cy = h * t;
+      pos.push(cx - px * w, cy, cz - pz * w); uv.push(0, t); col.push(1,1,1);
+      pos.push(cx + px * w, cy, cz + pz * w); uv.push(1, t); col.push(1,1,1);
+    }
+    for (let s = 0; s < segs; s++) {
+      const k = base + s * 2;
+      idx.push(k, k+1, k+2, k+1, k+3, k+2);
+      idx.push(k, k+2, k+1, k+1, k+2, k+3);
+    }
+  }
+  return createMesh(pos, computeSmoothNormals(pos, idx), uv, col, idx);
+}
+
+// Box / Glass Panel Helper
+function buildBox(w, h, d, col = [1, 1, 1]) {
+  const hw = w/2, hh = h/2, hd = d/2;
+  const faces = [
+    [[ -hw,-hh, hd],[ hw,-hh, hd],[ hw, hh, hd],[-hw, hh, hd],[0,0,1]],
+    [[  hw,-hh,-hd],[-hw,-hh,-hd],[-hw, hh,-hd],[ hw, hh,-hd],[0,0,-1]],
+    [[ -hw, hh, hd],[ hw, hh, hd],[ hw, hh,-hd],[-hw, hh,-hd],[0,1,0]],
+    [[ -hw,-hh,-hd],[ hw,-hh,-hd],[ hw,-hh, hd],[-hw,-hh, hd],[0,-1,0]],
+    [[  hw,-hh, hd],[ hw,-hh,-hd],[ hw, hh,-hd],[ hw, hh, hd],[1,0,0]],
+    [[ -hw,-hh,-hd],[-hw,-hh, hd],[-hw, hh, hd],[-hw, hh,-hd],[-1,0,0]],
+  ];
+  const pos=[], nrm=[], uv=[], color=[], idx=[];
+  let v = 0;
+  for (const f of faces) {
+    for (let i = 0; i < 4; i++) {
+      pos.push(f[i][0], f[i][1], f[i][2]);
+      nrm.push(f[4][0], f[4][1], f[4][2]);
+      uv.push(i === 1 || i === 2 ? 1 : 0, i >= 2 ? 1 : 0);
+      color.push(col[0], col[1], col[2]);
+    }
+    idx.push(v, v+1, v+2, v, v+2, v+3);
+    v += 4;
+  }
+  return createMesh(pos, nrm, uv, color, idx);
+}
+
+// Build all meshes once at startup
+const MESH = {
+  terrain: buildTerrainMesh(),
+  water: buildWaterMesh(),
+  boulder1: buildBoulder(1),
+  boulder2: buildBoulder(2),
+  boulder3: buildBoulder(3),
+  grass: buildGrassClump(),
+  waterfall: buildWaterfallMesh(),
+  rainbow: buildRainbowArcMesh(),
+  glassPanel: buildBox(2.3, 0.72, 0.035, [0.9, 0.96, 1.0]),
+  steelPost: buildBox(0.06, 0.78, 0.06, [0.82, 0.85, 0.88]),
+  pBody: buildPenguinBody(),
+  pHead: buildPenguinHead(),
+  pBeakU: buildBeakHalf(true),
+  pBeakL: buildBeakHalf(false),
+  pEye: buildSphere(0.032, 12, 16, 1, 1, 1, [1,1,1]),
+  pLidU: buildEyelid(true),
+  pLidL: buildEyelid(false),
+  pFlipL: buildPenguinFlipper(1),
+  pFlipR: buildPenguinFlipper(-1),
+  pFoot: buildPenguinFoot(),
+  pTail: buildPenguinTail(),
+  fish: buildFishMesh(),
+  bucket: buildBucketMesh(),
+  ice: buildIceCube(),
+  ball: buildSphere(0.27, 20, 28, 1, 1, 1, [1,1,1]),
+  shell: buildShellMesh(),
+  pebble: buildSphere(0.075, 10, 14, 1.2, 0.55, 0.95, [1,1,1]),
+  droplet: buildSphere(0.045, 7, 10, 1, 1, 1, [1,1,1]),
+  bubble: buildSphere(0.065, 10, 14, 1, 1, 1, [1,1,1])
+};
+
+// ============================================================================
+// 7. SCENE PROPS, BOULDERS, RIPPLES & PARTICLES
+// ============================================================================
+const BOULDERS = [
+  { mesh: MESH.boulder1, pos: [-2.45, 1.08, -3.15], scale: [1.35, 1.15, 1.05], yaw: 0.4 },
+  { mesh: MESH.boulder2, pos: [-0.25, 1.25, -3.35], scale: [1.45, 1.25, 1.15], yaw: 1.8 },
+  { mesh: MESH.boulder3, pos: [ 1.65, 1.05, -3.20], scale: [1.55, 1.10, 1.10], yaw: 2.5 },
+  { mesh: MESH.boulder1, pos: [ 3.35, 0.88, -2.15], scale: [1.30, 0.95, 1.20], yaw: 0.9 },
+  { mesh: MESH.boulder2, pos: [-3.75, 1.02, -1.65], scale: [1.35, 1.00, 1.15], yaw: 4.1 },
+  { mesh: MESH.boulder3, pos: [-3.55, 0.75,  1.85], scale: [1.10, 0.72, 0.95], yaw: 1.2 },
+  { mesh: MESH.boulder2, pos: [ 3.65, 0.72,  1.95], scale: [1.15, 0.65, 1.05], yaw: 3.2 },
+  // Small decorative sunlit river pebbles on dry ledges
+  { mesh: MESH.boulder1, pos: [-2.65, 0.46,  2.75], scale: [0.24, 0.16, 0.20], yaw: 0.5 },
+  { mesh: MESH.boulder3, pos: [-2.35, 0.46,  2.95], scale: [0.16, 0.11, 0.14], yaw: 1.9 },
+  { mesh: MESH.boulder2, pos: [ 2.85, 0.48,  2.25], scale: [0.26, 0.16, 0.22], yaw: 2.8 },
+];
+
+const GRASS_SPOTS = [
+  [-2.9, -2.55, 1.15, 0.2], [-2.2, -3.45, 1.3, 1.1], [-0.4, -3.6, 1.1, 2.3],
+  [1.1, -3.4, 1.25, 0.8], [2.5, -2.85, 1.15, 1.9], [3.5, -1.7, 1.0, 2.9],
+  [-3.8, -0.7, 1.05, 0.4], [3.6, 1.15, 0.95, 1.5]
+];
+
+const GLASS_RAILS = [
+  { pos: [-2.4, 2.32, -4.45], yaw:  0.16 },
+  { pos: [ 0.0, 2.38, -4.65], yaw:  0.00 },
+  { pos: [ 2.4, 2.32, -4.45], yaw: -0.16 }
+];
+
+// Interactive water ripples (16 slots)
+const MAX_RIPPLES = 16;
+const rippleData = new Float32Array(MAX_RIPPLES * 4);
+let rippleIdx = 0;
+function addRipple(x, z, strength = 0.85, timeOffset = 0) {
+  const i = rippleIdx * 4;
+  rippleData[i] = x;
+  rippleData[i + 1] = z;
+  rippleData[i + 2] = simTime + timeOffset;
+  rippleData[i + 3] = strength;
+  rippleIdx = (rippleIdx + 1) % MAX_RIPPLES;
+}
+
+// 3D Particle System (droplets, bubbles, waterfall mist, sun motes)
+const particles = [];
+function spawnParticle(type, x, y, z, vx, vy, vz, size, life, col = [0.86, 0.97, 1.0]) {
+  if (particles.length > 340) particles.shift();
+  particles.push({ type, x, y, z, vx, vy, vz, size, life, maxLife: life, col });
+}
+
+function spawnSplash(x, z, strength = 0.8) {
+  addRipple(x, z, strength);
+  addRipple(x, z, strength * 0.55, 0.14);
+  const count = Math.floor(10 + strength * 18);
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const spd = (0.5 + Math.random() * 1.45) * strength;
+    const vy = (1.35 + Math.random() * 2.1) * Math.sqrt(strength);
+    spawnParticle('drop', x + Math.cos(a)*0.08, WATER_Y + 0.04, z + Math.sin(a)*0.08,
+      Math.cos(a)*spd, vy, Math.sin(a)*spd, 0.5 + Math.random()*0.65, 0.55 + Math.random()*0.4, [0.82, 0.96, 1.0]);
+  }
+  const bCount = Math.floor(3 + strength * 5);
+  for (let i = 0; i < bCount; i++) {
+    const a = Math.random() * Math.PI * 2;
+    spawnParticle('bubble', x + Math.cos(a)*0.18, WATER_Y - 0.15 - Math.random()*0.25, z + Math.sin(a)*0.18,
+      Math.cos(a)*0.2, 0.35 + Math.random()*0.45, Math.sin(a)*0.2, 0.45 + Math.random()*0.65, 1.1 + Math.random()*0.9, [0.9, 0.98, 1.0]);
+  }
+}
+
+function spawnHappySparkles(x, y, z, count = 12, rosy = false) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 0.12 + Math.random() * 0.32;
+    const col = rosy
+      ? [1.0, 0.78 + Math.random()*0.18, 0.86 + Math.random()*0.14]
+      : [1.0, 0.94 + Math.random()*0.06, 0.68 + Math.random()*0.25];
+    spawnParticle(Math.random() < 0.42 ? 'bubble' : 'mote',
+      x + Math.cos(a)*r, y + Math.random()*0.35, z + Math.sin(a)*r,
+      Math.cos(a)*0.28, 0.45 + Math.random()*0.55, Math.sin(a)*0.28,
+      0.45 + Math.random()*0.55, 0.95 + Math.random()*0.7, col);
+  }
+}
+
+// ============================================================================
+// 8. BUCKET FISH, THROWN FISH, BEACH BALL, ICE CUBES & GIFT SHELLS
+// ============================================================================
+let totalFedCount = 0;
+let rainbowTimer = 0;
+let bubblePartyTimer = 0;
+let bucketShake = 0;
+let bucketJiggleTime = 0;
+
+function pickNextFishVariant() {
+  // Rich natural variety that blossoms as the child feeds!
+  if (totalFedCount >= 2 && totalFedCount % 5 === 4) return 3; // Rainbow pearl fish!
+  const r = Math.random();
+  if (totalFedCount >= 1 && r < 0.28) return 1; // Sakura rose-gold fish
+  if (totalFedCount >= 2 && r < 0.48) return 2; // Plump emerald mackerel
+  return 0; // Classic gleaming silver sardine
+}
+
+// 7 visible fish nestled in the ice bucket!
+const bucketFish = [];
+for (let i = 0; i < 7; i++) {
+  const ang = (i / 7) * Math.PI * 2 + 0.35;
+  const rad = i === 0 ? 0.04 : 0.135 + (i % 2) * 0.04;
+  bucketFish.push({
+    slot: i,
+    ox: Math.cos(ang) * rad,
+    oz: Math.sin(ang) * rad,
+    yaw: ang + Math.PI * 0.65,
+    pitch: -0.78 - (i % 3) * 0.12,
+    variant: i === 2 ? 1 : (i === 5 ? 2 : 0),
+    present: true,
+    refillTimer: 0,
+    popAnim: 1
+  });
+}
+
+// Ice cubes nestled in the bucket rim + interactive sliding ice cubes
+const bucketIceOffsets = [
+  [-0.14, 0.39, 0.12, 0.4], [0.15, 0.38, 0.08, 1.1], [0.02, 0.40, -0.15, 2.2],
+  [-0.12, 0.37, -0.11, 0.8], [0.10, 0.39, -0.06, 1.7], [-0.02, 0.38, 0.16, 2.7]
+];
+const slidingIces = [];
+function spawnSlidingIce() {
+  if (slidingIces.length >= 4) return;
+  const ang = lerp(-0.5, 0.9, Math.random());
+  const spd = 1.6 + Math.random() * 0.9;
+  slidingIces.push({
+    x: BUCKET_POS[0] + 0.22,
+    y: BUCKET_POS[1] + 0.55,
+    z: BUCKET_POS[2] - 0.05,
+    vx: Math.cos(ang) * spd,
+    vy: 1.5 + Math.random() * 0.6,
+    vz: Math.sin(ang) * spd * 0.65 - 0.35,
+    yaw: Math.random() * 6.28,
+    spin: (Math.random() - 0.5) * 6,
+    life: 16,
+    inWater: false
+  });
+  Sound.iceClink();
+}
+
+// Active fishes in the world (held, flying in air, swimming/sinking in pool, resting on rock)
+const activeFish = [];
+let heldFish = null;
+
+function createWorldFish(x, y, z, variant) {
+  const scale = variant === 2 ? 1.26 : (variant === 1 ? 0.96 : 1.04);
+  const f = {
+    x, y, z,
+    vx: 0, vy: 0, vz: 0,
+    yaw: 0, pitch: 0, roll: 0,
+    variant,
+    scale,
+    state: 'held', // 'held' | 'air' | 'water' | 'land' | 'eaten'
+    wiggle: 1.0,
+    age: 0,
+    claimedBy: null,
+    eatenBy: null
+  };
+  activeFish.push(f);
+  return f;
+}
+
+// Floating Sunny Pastel Beach Ball
+const beachBall = {
+  x: 0.95, y: 0.14, z: -0.75,
+  vx: 0, vy: 0, vz: 0,
+  rotX: 0.2, rotZ: -0.3,
+  radius: 0.27,
+  boopCooldown: 0
+};
+
+// Penguin Gift Collection (seashells, pink coral, aqua sea-glass placed on right foreground ledge!)
+const GIFT_SLOTS = [
+  [1.48, 2.28, 'shell', [1.0, 0.80, 0.88]],
+  [1.82, 2.48, 'pebble', [0.48, 0.92, 0.88]],
+  [2.16, 2.24, 'shell', [1.0, 0.91, 0.72]],
+  [2.46, 2.52, 'pebble', [0.98, 0.64, 0.76]],
+  [1.64, 2.66, 'shell', [0.76, 0.88, 1.0]],
+  [2.04, 2.68, 'pebble', [0.96, 0.84, 0.58]],
+  [2.42, 2.18, 'shell', [0.92, 0.76, 0.98]]
+];
+const placedGifts = []; // { slotIdx, x, y, z, kind, col, yaw, pop, shimmer }
+
+// ============================================================================
+// 9. CAPE PENGUIN TRIO — PERSONALITY, AI & EXPRESSIVE ANIMATION
+// ============================================================================
+function createPenguin(cfg) {
+  return {
+    name: cfg.name,
+    seed: cfg.seed,
+    scale: cfg.scale,
+    pitchVoice: cfg.pitchVoice,
+    homeX: cfg.x,
+    homeZ: cfg.z,
+    x: cfg.x,
+    y: cfg.inWater ? -0.25 : getTerrainHeight(cfg.x, cfg.z),
+    z: cfg.z,
+    vx: 0, vy: 0, vz: 0,
+    yaw: cfg.yaw,
+    pitch: 0,
+    roll: 0,
+    inWater: !!cfg.inWater,
+    // Expressive skeletal channels
+    headYaw: 0,
+    headPitch: 0,
+    headTilt: 0,
+    beakOpen: 0,
+    blink: 0,
+    blinkTimer: 1.5 + Math.random() * 2.5,
+    happyEyes: 0,
+    flipperL: 0,
+    flipperR: 0,
+    flipperSpread: 0.14,
+    stepPhase: Math.random() * 6.28,
+    stepAmp: 0,
+    tailWag: 0,
+    squash: 1,
+    wetness: cfg.inWater ? 1.0 : 0.0,
+    bellySlide: 0,
+    // AI state
+    state: cfg.inWater ? 'swim_cruise' : 'idle_land',
+    stateTimer: 1.5 + Math.random() * 2.5,
+    targetX: cfg.x,
+    targetZ: cfg.z,
+    targetY: -0.35,
+    targetFish: null,
+    eatenVariant: 0,
+    fedCount: 0,
+    petTimer: 0,
+    shakeTimer: 0,
+    preenTimer: 0,
+    carryingGift: null, // gift slot index when fetching a gift!
+    jumpT: 0,
+    jumpStart: [0,0,0],
+    jumpEnd: [0,0,0],
+    jumpHeight: 0.9,
+    spinAccum: 0,
+    diveCooldown: 0,
+    lastChirpTime: -10
+  };
+}
+
+const penguins = [
+  // Momo: friendly center-front penguin greeting you warmly
+  createPenguin({ name: 'Momo', seed: 1.3, scale: 1.03, pitchVoice: 1.00, x: -0.15, z: 2.08, yaw: 0.18, inWater: false }),
+  // Hina: slightly smaller, extra-bouncy energetic youngster near the left rock/bucket
+  createPenguin({ name: 'Hina', seed: 2.7, scale: 0.87, pitchVoice: 1.24, x: -1.12, z: 1.92, yaw: 0.58, inWater: false }),
+  // Sora: sleek playful swimmer cruising in the sunlit turquoise pool
+  createPenguin({ name: 'Sora', seed: 4.1, scale: 0.98, pitchVoice: 0.92, x: 0.72, z: -0.25, yaw: -0.65, inWater: true })
+];
+
+function computePenguinBodyMatrix(p, out) {
+  M4.identity(out);
+  M4.translate(out, p.x, p.y, p.z);
+  M4.rotateY(out, p.yaw);
+  // Belly slide or swimming tilts body forward smoothly
+  M4.rotateX(out, p.pitch + p.bellySlide * 1.38);
+  // Cute waddle side-to-side sway + shake
+  const waddleRoll = Math.sin(p.stepPhase) * 0.13 * p.stepAmp;
+  const shakeRoll = p.shakeTimer > 0 ? Math.sin(simTime * 42.0) * 0.22 * Math.min(1, p.shakeTimer * 2.5) : 0;
+  M4.rotateZ(out, p.roll + waddleRoll + shakeRoll);
+  const s = p.scale;
+  const sy = s * p.squash;
+  const sxz = s / Math.sqrt(Math.max(0.65, p.squash));
+  M4.scale(out, sxz, sy, sxz);
+  return out;
+}
+
+const _tmpMatA = M4.create();
+const _tmpMatB = M4.create();
+
+function getPenguinHeadMatrix(p, bodyMat, out) {
+  M4.copy(out, bodyMat);
+  M4.translate(out, 0, 0.72, 0.015);
+  M4.rotateY(out, p.headYaw);
+  M4.rotateX(out, p.headPitch - p.bellySlide * 0.75);
+  M4.rotateZ(out, p.headTilt);
+  return out;
+}
+
+function getBeakTipWorldPos(p) {
+  computePenguinBodyMatrix(p, _tmpMatA);
+  getPenguinHeadMatrix(p, _tmpMatA, _tmpMatB);
+  return M4.transformPoint(_tmpMatB, [0, -0.015, 0.285]);
+}
+
+function getPenguinCenterWorldPos(p) {
+  return [p.x, p.y + (p.inWater ? 0.1 : 0.42 * p.scale), p.z];
+}
+
+function penguinChirp(p, mood) {
+  if (simTime - p.lastChirpTime < 0.35 && mood !== 'happy' && mood !== 'celebrate') return;
+  p.lastChirpTime = simTime;
+  Sound.chirp(p.pitchVoice, mood);
+}
+
+// Keep land coordinates inside safe sunny walkable spots
+function clampLandSpot(x, z) {
+  x = clamp(x, -3.1, 3.0);
+  z = clamp(z, -1.2, 3.15);
+  // Push gently away from bucket pedestal
+  const dx = x - BUCKET_POS[0], dz = z - BUCKET_POS[2];
+  const d = Math.hypot(dx, dz);
+  if (d < 0.66) {
+    const nx = d > 0.01 ? dx / d : 1;
+    const nz = d > 0.01 ? dz / d : 0;
+    x = BUCKET_POS[0] + nx * 0.66;
+    z = BUCKET_POS[2] + nz * 0.66;
+  }
+  return [x, z];
+}
+
+function pickRandomLandSpot(p) {
+  const spots = [
+    [-0.95, 1.95], [-0.25, 2.25], [0.55, 2.15], [1.15, 1.95],
+    [2.32, 0.45], [2.25, -0.25], // right diving terrace
+    [-2.55, 0.55], [-2.15, 1.45] // left slide hill
+  ];
+  const s = spots[Math.floor(Math.random() * spots.length)];
+  return clampLandSpot(s[0] + (Math.random() - 0.5) * 0.45, s[1] + (Math.random() - 0.5) * 0.35);
+}
+
+function pickRandomSwimSpot() {
+  const ang = Math.random() * Math.PI * 2;
+  const r = 0.25 + Math.random() * 0.65;
+  return [0.05 + Math.cos(ang) * 2.0 * r, -0.55 + Math.sin(ang) * 1.35 * r];
+}
+
+function triggerPenguinEat(p, fish) {
+  fish.state = 'eaten';
+  fish.eatenBy = p;
+  fish.claimedBy = p;
+  p.targetFish = fish;
+  p.eatenVariant = fish.variant;
+  p.state = 'eating';
+  p.stateTimer = 0.72;
+  p.fedCount++;
+  totalFedCount++;
+  Sound.gulp();
+  // Look toward the fish as it gulps
+  p.beakOpen = 0.52;
+  p.happyEyes = 1.0;
+  p.squash = 1.14;
+  p.spinAccum = 0;
+
+  // Rainbow pearl fish triggers a magical sunlit rainbow & bubble party!
+  if (fish.variant === 3 || (totalFedCount > 0 && totalFedCount % 6 === 0)) {
+    rainbowTimer = Math.max(rainbowTimer, 11.0);
+    bubblePartyTimer = Math.max(bubblePartyTimer, 10.0);
+    Sound.rainbowShimmer();
+    for (const op of penguins) {
+      if (op !== p && (op.state === 'idle_land' || op.state === 'swim_cruise')) {
+        op.state = 'happy_dance';
+        op.stateTimer = 2.4;
+        op.eatenVariant = 3;
+        op.spinAccum = 0;
+        penguinChirp(op, 'celebrate');
+      }
+    }
+  }
+}
+
+function startPenguinDive(p, targetX, targetZ) {
+  p.state = 'diving';
+  p.jumpT = 0;
+  p.jumpStart = [p.x, p.y, p.z];
+  p.jumpEnd = [targetX, -0.35, targetZ];
+  p.jumpHeight = Math.max(p.y + 0.45, 0.75);
+  p.yaw = Math.atan2(targetX - p.x, targetZ - p.z);
+  p.diveCooldown = 5.0;
+  penguinChirp(p, 'dive');
+}
+
+function startPorpoiseJump(p) {
+  const dirX = Math.sin(p.yaw), dirZ = Math.cos(p.yaw);
+  let ex = p.x + dirX * 1.45;
+  let ez = p.z + dirZ * 1.45;
+  if (!isPointInWater(ex, ez)) {
+    const [sx, sz] = pickRandomSwimSpot();
+    ex = sx; ez = sz;
+    p.yaw = Math.atan2(ex - p.x, ez - p.z);
+  }
+  p.state = 'porpoise';
+  p.jumpT = 0;
+  p.jumpStart = [p.x, -0.22, p.z];
+  p.jumpEnd = [ex, -0.32, ez];
+  p.jumpHeight = 0.85;
+  spawnSplash(p.x, p.z, 0.72);
+  Sound.splash(0.55);
+  penguinChirp(p, 'happy');
+}
+
+function updatePenguins(dt) {
+  // Check if there is any free fish in water or land that needs a chaser
+  for (const f of activeFish) {
+    if ((f.state === 'water' || f.state === 'land') && !f.claimedBy) {
+      let best = null, bestScore = 1e9;
+      for (const p of penguins) {
+        if (p.state === 'eating' || p.state === 'diving' || p.state === 'porpoise' || p.state === 'toboggan' || p.state === 'fetch_gift') continue;
+        const d = Math.hypot(p.x - f.x, p.z - f.z);
+        const modePenalty = (f.state === 'water' && !p.inWater) ? 1.4 : ((f.state === 'land' && p.inWater) ? 2.2 : 0);
+        if (d + modePenalty < bestScore) {
+          bestScore = d + modePenalty;
+          best = p;
+        }
+      }
+      if (best) {
+        f.claimedBy = best;
+        best.targetFish = f;
+        best.state = 'chase_fish';
+        best.stateTimer = 8.0;
+        penguinChirp(best, 'eager');
+      }
+    }
+  }
+
+  for (const p of penguins) {
+    p.diveCooldown = Math.max(0, p.diveCooldown - dt);
+    p.squash = damp(p.squash, 1.0, 7.5, dt);
+
+    // Wetness dries gradually on sunny rocks, instant 1.0 in water
+    if (p.inWater) {
+      p.wetness = damp(p.wetness, 1.0, 6.0, dt);
+    } else {
+      p.wetness = Math.max(0, p.wetness - dt * 0.065);
+    }
+
+    // Natural eye blinking
+    p.blinkTimer -= dt;
+    if (p.blinkTimer <= 0) {
+      p.blinkTimer = 2.2 + Math.random() * 3.4;
+      p.blink = 1.0;
+    } else {
+      p.blink = Math.max(0, p.blink - dt * 7.5);
+    }
+
+    // Shake dry timer
+    if (p.shakeTimer > 0) {
+      p.shakeTimer -= dt;
+      if (Math.random() < dt * 28 && p.wetness > 0.15) {
+        const a = Math.random() * 6.28;
+        spawnParticle('drop', p.x + Math.cos(a)*0.2, p.y + 0.35 + Math.random()*0.25, p.z + Math.sin(a)*0.2,
+          Math.cos(a)*1.4, 0.8 + Math.random()*0.8, Math.sin(a)*1.4, 0.42, 0.45, [0.88, 0.97, 1.0]);
+      }
+    }
+
+    // Target gaze defaults (look warmly toward camera or held fish)
+    let lookTarget = [camPos[0] * 0.45, camPos[1] * 0.35, camPos[2] * 0.65];
+    let wantBeakOpen = 0;
+    let wantHappyEyes = 0;
+    let wantFlipperFlap = 0;
+    let wantTailWag = 0;
+    let wantBellySlide = 0;
+    let wantHeadTilt = 0;
+
+    // --- If player is holding a fish, all free penguins become super curious & beg! ---
+    if (heldFish && (p.state === 'idle_land' || p.state === 'swim_cruise' || p.state === 'begging')) {
+      p.state = 'begging';
+      lookTarget = [heldFish.x, heldFish.y, heldFish.z];
+    }
+
+    // --- State Machine ---
+    if (p.state === 'eating') {
+      p.stateTimer -= dt;
+      const t = 1 - clamp(p.stateTimer / 0.72, 0, 1);
+      wantHappyEyes = 1.0;
+      wantTailWag = 1.0;
+      wantFlipperFlap = 0.75;
+      p.stepAmp = damp(p.stepAmp, 0, 8, dt);
+
+      // Keep swallowed fish locked to beak while tilting skyward to gulp!
+      if (p.targetFish && p.targetFish.eatenBy === p) {
+        const tip = getBeakTipWorldPos(p);
+        const swallowProg = smoothstep(0.18, 0.68, t);
+        p.targetFish.x = lerp(tip[0], p.x, swallowProg * 0.55);
+        p.targetFish.y = lerp(tip[1], p.y + 0.65 * p.scale, swallowProg * 0.45);
+        p.targetFish.z = lerp(tip[2], p.z, swallowProg * 0.55);
+        p.targetFish.yaw = p.yaw + Math.PI;
+        p.targetFish.pitch = -0.6 - swallowProg * 0.8;
+        p.targetFish.scale = (p.eatenVariant === 2 ? 1.26 : 1.0) * (1 - smoothstep(0.45, 0.78, t));
+      }
+
+      if (t < 0.25) {
+        wantBeakOpen = 0.52;
+        p.headPitch = damp(p.headPitch, -0.25, 14, dt);
+      } else if (t < 0.72) {
+        // Tilt beak skyward & gulp!
+        wantBeakOpen = lerp(0.35, 0.0, (t - 0.25) / 0.47);
+        const doubleGulp = p.eatenVariant === 2 ? Math.sin(t * 28.0) * 0.14 : 0;
+        p.headPitch = damp(p.headPitch, -0.78 + doubleGulp, 12, dt);
+      } else {
+        wantBeakOpen = 0;
+        p.headPitch = damp(p.headPitch, 0.0, 10, dt);
+      }
+
+      if (p.stateTimer <= 0) {
+        // Remove eaten fish
+        if (p.targetFish) {
+          const idx = activeFish.indexOf(p.targetFish);
+          if (idx >= 0) activeFish.splice(idx, 1);
+          p.targetFish = null;
+        }
+        p.state = 'happy_dance';
+        p.stateTimer = p.eatenVariant === 1 ? 2.1 : 1.75;
+        p.spinAccum = 0;
+        penguinChirp(p, p.eatenVariant === 3 ? 'celebrate' : 'happy');
+        spawnHappySparkles(p.x, p.y + 0.55 * p.scale, p.z, p.eatenVariant === 1 ? 16 : 11, p.eatenVariant === 1);
+      }
+    }
+
+    else if (p.state === 'happy_dance') {
+      p.stateTimer -= dt;
+      wantHappyEyes = 1.0;
+      wantTailWag = 1.3;
+      wantFlipperFlap = 1.35;
+      wantBeakOpen = 0.12 + Math.sin(simTime * 16) * 0.08;
+      if (p.inWater) {
+        // Joyful water spin or porpoise leap!
+        if (p.stateTimer < 1.25 && Math.random() < 0.06) {
+          startPorpoiseJump(p);
+        } else {
+          p.yaw += dt * 4.2;
+          p.y = damp(p.y, -0.18 + Math.sin(simTime * 11) * 0.08, 10, dt);
+          if (Math.random() < dt * 8) addRipple(p.x, p.z, 0.45);
+        }
+      } else {
+        // Adorable bouncy waddle dance!
+        p.stepPhase += dt * 15.0;
+        p.stepAmp = 1.1;
+        const hop = Math.abs(Math.sin(simTime * 9.5)) * 0.14;
+        p.y = getTerrainHeight(p.x, p.z) + hop;
+        // Sakura fish makes penguin do a joyous 360 twirl!
+        if (p.eatenVariant === 1 && p.spinAccum < Math.PI * 2) {
+          const dSpin = dt * 6.5;
+          p.yaw += dSpin;
+          p.spinAccum += dSpin;
+        } else if (p.eatenVariant === 2) {
+          // Proud mackerel chest puff + bow!
+          p.pitch = damp(p.pitch, Math.sin(simTime * 6.0) * 0.22, 10, dt);
+        } else {
+          wantHeadTilt = Math.sin(simTime * 9.5) * 0.26;
+        }
+      }
+
+      if (p.stateTimer <= 0) {
+        p.pitch = 0;
+        // Every ~3rd fish eaten -> dive to fetch a shiny seashell gift for the child!
+        if (placedGifts.length < GIFT_SLOTS.length && totalFedCount >= 2 && (totalFedCount % 3 === 0 || p.fedCount === 2) && !penguins.some(o => o.carryingGift !== null)) {
+          p.carryingGift = placedGifts.length;
+          p.state = 'fetch_gift';
+          p.stateTimer = 0; // phase 0: go dive into pool -> phase 1: surface with shell -> phase 2: place on right shelf
+          const [sx, sz] = [0.4 + (Math.random()-0.5)*0.8, -0.65 + (Math.random()-0.5)*0.6];
+          p.targetX = sx; p.targetZ = sz;
+          if (!p.inWater) startPenguinDive(p, sx, sz);
+        } else if (!p.inWater && p.name === 'Hina' && Math.random() < 0.42) {
+          // Hina loves climbing to the left rock to belly-slide after eating!
+          p.state = 'toboggan_walk';
+          p.targetX = -2.75; p.targetZ = 0.25;
+          p.stateTimer = 6.0;
+        } else {
+          p.state = p.inWater ? 'swim_cruise' : 'idle_land';
+          p.stateTimer = 2.0 + Math.random() * 2.5;
+        }
+      }
+    }
+
+    else if (p.state === 'petted') {
+      p.petTimer -= dt;
+      wantHappyEyes = 1.0;
+      wantTailWag = 1.1;
+      wantFlipperFlap = 0.55;
+      wantHeadTilt = Math.sin(simTime * 5.2) * 0.24;
+      p.stepAmp = damp(p.stepAmp, 0.25, 8, dt);
+      if (!p.inWater) {
+        const ty = getTerrainHeight(p.x, p.z);
+        p.y = damp(p.y, ty, 12, dt);
+        p.yaw = dampAngle(p.yaw, Math.atan2(camPos[0]*0.3 - p.x, camPos[2]*0.7 - p.z), 5, dt);
+      }
+      if (p.petTimer <= 0) {
+        p.state = p.inWater ? 'swim_cruise' : 'idle_land';
+        p.stateTimer = 2.2;
+      }
+    }
+
+    else if (p.state === 'begging') {
+      if (!heldFish) {
+        p.state = p.inWater ? 'swim_cruise' : 'idle_land';
+        p.stateTimer = 1.5;
+      } else {
+        lookTarget = [heldFish.x, heldFish.y, heldFish.z];
+        const tip = getBeakTipWorldPos(p);
+        const distFish = V3.dist(tip, [heldFish.x, heldFish.y, heldFish.z]);
+        const horizDist = Math.hypot(heldFish.x - p.x, heldFish.z - p.z);
+
+        // Hand-feed catch! Super smooth & forgiving for 5-year-old fingers
+        if (distFish < 0.42) {
+          const f = heldFish;
+          heldFish = null;
+          triggerPenguinEat(p, f);
+          continue;
+        }
+
+        const wantYaw = Math.atan2(heldFish.x - p.x, heldFish.z - p.z);
+        p.yaw = dampAngle(p.yaw, wantYaw, 6.5, dt);
+
+        if (p.inWater) {
+          // Swim eagerly toward the area under the held fish
+          const tx = clamp(heldFish.x, -2.0, 2.0);
+          const tz = clamp(heldFish.z, -1.7, 1.15);
+          const dx = tx - p.x, dz = tz - p.z;
+          const d = Math.hypot(dx, dz);
+          if (d > 0.32) {
+            p.x += (dx / d) * 1.45 * dt;
+            p.z += (dz / d) * 1.45 * dt;
+            if (Math.random() < dt * 5) addRipple(p.x, p.z, 0.35);
+          }
+          // Pop head happily above water surface to look up at the fish!
+          p.y = damp(p.y, -0.26, 6, dt);
+          p.pitch = damp(p.pitch, -0.15, 6, dt);
+          wantFlipperFlap = horizDist < 1.8 ? 0.65 : 0.25;
+        } else {
+          // Waddle eagerly closer on the rock ledge (without falling in accidentally)
+          if (horizDist > 0.72) {
+            const stepX = p.x + Math.sin(p.yaw) * 0.95 * dt;
+            const stepZ = p.z + Math.cos(p.yaw) * 0.95 * dt;
+            const [cx, cz] = clampLandSpot(stepX, stepZ);
+            if (!isPointInWater(cx, cz)) {
+              p.x = cx; p.z = cz;
+              p.stepPhase += dt * 11.5;
+              p.stepAmp = damp(p.stepAmp, 1.0, 8, dt);
+            } else {
+              p.stepAmp = damp(p.stepAmp, 0.2, 8, dt);
+            }
+          } else {
+            p.stepAmp = damp(p.stepAmp, 0.0, 8, dt);
+          }
+          const hop = horizDist < 1.35 ? Math.abs(Math.sin(simTime * 8.5 + p.seed)) * 0.065 : 0;
+          p.y = damp(p.y, getTerrainHeight(p.x, p.z) + hop, 14, dt);
+          wantFlipperFlap = horizDist < 1.55 ? 0.95 : 0.35;
+          wantTailWag = horizDist < 1.4 ? 0.75 : 0.2;
+        }
+
+        // Open beak wide ("あーん!") when the fish is close!
+        wantBeakOpen = smoothstep(1.65, 0.55, distFish) * 0.52;
+        if (distFish < 1.1 && Math.random() < dt * 0.9) penguinChirp(p, 'eager');
+      }
+    }
+
+    else if (p.state === 'chase_fish') {
+      const f = p.targetFish;
+      if (!f || (f.state !== 'water' && f.state !== 'land')) {
+        p.targetFish = null;
+        p.state = p.inWater ? 'swim_cruise' : 'idle_land';
+        p.stateTimer = 1.5;
+      } else {
+        lookTarget = [f.x, f.y, f.z];
+        const dx = f.x - p.x, dz = f.z - p.z;
+        const hd = Math.hypot(dx, dz);
+        p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 8.0, dt);
+        wantBeakOpen = smoothstep(1.1, 0.35, hd) * 0.48;
+
+        if (f.state === 'water' && !p.inWater) {
+          // Waddle briskly to the water edge and dive in!
+          const nx = dx / (hd || 1), nz = dz / (hd || 1);
+          const nextX = p.x + nx * 1.25 * dt;
+          const nextZ = p.z + nz * 1.25 * dt;
+          if (isPointInWater(nextX, nextZ) || hd < 1.35) {
+            startPenguinDive(p, lerp(p.x, f.x, 0.55), lerp(p.z, f.z, 0.55));
+          } else {
+            p.x = nextX; p.z = nextZ;
+            p.y = getTerrainHeight(p.x, p.z);
+            p.stepPhase += dt * 13;
+            p.stepAmp = 1.1;
+            wantFlipperFlap = 0.6;
+          }
+        } else if (f.state === 'water' && p.inWater) {
+          // Torpedo-swim gracefully underwater right to the fish!
+          const dy = (f.y - 0.1) - p.y;
+          const d3 = Math.hypot(dx, dy, dz) || 1;
+          const spd = 2.35;
+          p.x += (dx / d3) * spd * dt;
+          p.y = clamp(p.y + (dy / d3) * spd * dt, getTerrainHeight(p.x, p.z) + 0.18, -0.15);
+          p.z += (dz / d3) * spd * dt;
+          p.pitch = damp(p.pitch, 1.35 - (dy / d3) * 0.65, 7, dt);
+          wantFlipperFlap = 1.1;
+          if (Math.random() < dt * 12) {
+            spawnParticle('bubble', p.x, p.y + 0.1, p.z, (Math.random()-0.5)*0.2, 0.45, (Math.random()-0.5)*0.2, 0.4, 0.9, [0.88, 0.98, 1.0]);
+          }
+          if (d3 < 0.48) {
+            triggerPenguinEat(p, f);
+          }
+        } else if (f.state === 'land' && !p.inWater) {
+          // Waddle briskly on land to scoop up the fish!
+          if (hd > 0.38) {
+            p.x += (dx / hd) * 1.35 * dt;
+            p.z += (dz / hd) * 1.35 * dt;
+            p.y = getTerrainHeight(p.x, p.z);
+            p.stepPhase += dt * 13.5;
+            p.stepAmp = 1.1;
+            wantFlipperFlap = 0.7;
+          } else {
+            triggerPenguinEat(p, f);
+          }
+        } else {
+          // Fish on land while penguin in water -> release claim so a land penguin or swim-exit takes it
+          f.claimedBy = null;
+          p.targetFish = null;
+          p.state = 'swim_cruise';
+        }
+      }
+    }
+
+    else if (p.state === 'diving' || p.state === 'porpoise') {
+      const dur = p.state === 'porpoise' ? 0.78 : 0.72;
+      p.jumpT += dt / dur;
+      const t = clamp(p.jumpT, 0, 1);
+      p.x = lerp(p.jumpStart[0], p.jumpEnd[0], t);
+      p.z = lerp(p.jumpStart[2], p.jumpEnd[2], t);
+      const baseY = lerp(p.jumpStart[1], p.jumpEnd[1], t);
+      const arc = 4 * t * (1 - t) * (p.jumpHeight - Math.max(p.jumpStart[1], p.jumpEnd[1]) * 0.5);
+      p.y = baseY + Math.max(0.25, arc);
+      // Graceful arched dive pitch!
+      p.pitch = lerp(0.55, 2.15, t);
+      p.stepAmp = 0;
+      wantFlipperFlap = 0.2;
+      if (t >= 1) {
+        p.inWater = true;
+        p.wetness = 1.0;
+        spawnSplash(p.x, p.z, 0.95);
+        Sound.splash(0.85);
+        if (p.carryingGift !== null) {
+          p.state = 'fetch_gift';
+          p.stateTimer = 1.0; // diving underwater to pick shell
+        } else if (p.targetFish) {
+          p.state = 'chase_fish';
+        } else {
+          p.state = 'swim_cruise';
+          p.stateTimer = 3.5 + Math.random() * 3.5;
+          const [sx, sz] = pickRandomSwimSpot();
+          p.targetX = sx; p.targetZ = sz; p.targetY = -0.45;
+        }
+      }
+    }
+
+    else if (p.state === 'toboggan_walk') {
+      // Walk up the left smooth rock hill to slide down on belly!
+      const dx = p.targetX - p.x, dz = p.targetZ - p.z;
+      const d = Math.hypot(dx, dz);
+      p.stateTimer -= dt;
+      if (d > 0.25 && p.stateTimer > 0) {
+        p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 6, dt);
+        p.x += (dx / d) * 1.05 * dt;
+        p.z += (dz / d) * 1.05 * dt;
+        p.y = getTerrainHeight(p.x, p.z);
+        p.stepPhase += dt * 11;
+        p.stepAmp = 1.0;
+      } else {
+        p.state = 'toboggan';
+        p.stateTimer = 1.5;
+        p.yaw = Math.atan2(-1.1 - p.x, 0.05 - p.z);
+        penguinChirp(p, 'dive');
+      }
+    }
+
+    else if (p.state === 'toboggan') {
+      // Adorable belly-slide down the wet left rock into the turquoise pool!
+      wantBellySlide = 1.0;
+      wantHappyEyes = 1.0;
+      wantFlipperFlap = 0.35;
+      p.stepAmp = 0;
+      const dx = -0.95 - p.x, dz = -0.05 - p.z;
+      const d = Math.hypot(dx, dz) || 1;
+      p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 6, dt);
+      p.x += (dx / d) * 2.25 * dt;
+      p.z += (dz / d) * 2.25 * dt;
+      const ty = getTerrainHeight(p.x, p.z);
+      p.y = ty + 0.14;
+      if (Math.random() < dt * 16) {
+        spawnParticle('drop', p.x, p.y, p.z, (Math.random()-0.5)*0.6, 0.5, (Math.random()-0.5)*0.6, 0.38, 0.35, [0.9, 0.98, 1.0]);
+      }
+      if (ty < -0.18 || p.stateTimer <= 0) {
+        p.inWater = true;
+        p.wetness = 1.0;
+        p.bellySlide = 0;
+        spawnSplash(p.x, p.z, 1.15);
+        Sound.splash(1.0);
+        p.state = 'swim_cruise';
+        p.stateTimer = 4.0;
+        const [sx, sz] = pickRandomSwimSpot();
+        p.targetX = sx; p.targetZ = sz; p.targetY = -0.45;
+      }
+      p.stateTimer -= dt;
+    }
+
+    else if (p.state === 'fetch_gift') {
+      // Phase 0..1: dive underwater -> Phase 1..2: swim to front exit holding shell -> Phase 2..3: waddle to right shelf & place it!
+      const slot = GIFT_SLOTS[p.carryingGift];
+      if (!slot) { p.carryingGift = null; p.state = 'idle_land'; continue; }
+      if (p.inWater) {
+        // Swim smoothly toward front entry cove (0.15, 1.25)
+        const ex = 0.25, ez = 1.28;
+        const dx = ex - p.x, dz = ez - p.z;
+        const d = Math.hypot(dx, dz);
+        p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 6, dt);
+        if (d > 0.35) {
+          p.x += (dx / d) * 1.55 * dt;
+          p.z += (dz / d) * 1.55 * dt;
+          p.y = damp(p.y, -0.25, 5, dt);
+          p.pitch = damp(p.pitch, 1.05, 5, dt);
+          wantFlipperFlap = 0.9;
+        } else {
+          // Hop out onto the sunny front ledge!
+          p.inWater = false;
+          p.pitch = 0;
+          p.y = getTerrainHeight(p.x, p.z);
+          spawnSplash(p.x, p.z, 0.5);
+          Sound.splash(0.42);
+        }
+      } else {
+        // Waddle to the right sunny gift shelf!
+        const gx = slot[0] - 0.22, gz = slot[1] - 0.16;
+        const dx = gx - p.x, dz = gz - p.z;
+        const d = Math.hypot(dx, dz);
+        p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 6.5, dt);
+        if (d > 0.22) {
+          p.x += (dx / d) * 1.05 * dt;
+          p.z += (dz / d) * 1.05 * dt;
+          p.y = getTerrainHeight(p.x, p.z);
+          p.stepPhase += dt * 11.5;
+          p.stepAmp = 1.0;
+        } else {
+          // Place the shiny shell gift down proudly!
+          const gy = getTerrainHeight(slot[0], slot[1]) + 0.015;
+          placedGifts.push({
+            slotIdx: p.carryingGift,
+            x: slot[0], y: gy, z: slot[1],
+            kind: slot[2], col: slot[3],
+            yaw: Math.random() * 6.28,
+            pop: 0.01, shimmer: 1.0
+          });
+          Sound.shellChime(placedGifts.length - 1);
+          spawnHappySparkles(slot[0], gy + 0.12, slot[1], 14, true);
+          p.carryingGift = null;
+          p.state = 'happy_dance';
+          p.stateTimer = 1.65;
+          p.eatenVariant = 0;
+          p.yaw = Math.atan2(camPos[0]*0.3 - p.x, camPos[2]*0.7 - p.z);
+          penguinChirp(p, 'happy');
+        }
+      }
+    }
+
+    else if (p.state === 'swim_cruise') {
+      p.stateTimer -= dt;
+      const dx = p.targetX - p.x, dz = p.targetZ - p.z;
+      const d = Math.hypot(dx, dz);
+
+      // Occasionally boop the floating beach ball if nearby!
+      const bd = Math.hypot(beachBall.x - p.x, beachBall.z - p.z);
+      if (bd < 0.55 && beachBall.boopCooldown <= 0) {
+        const bnx = (beachBall.x - p.x) / (bd || 1);
+        const bnz = (beachBall.z - p.z) / (bd || 1);
+        beachBall.vx += bnx * 2.2;
+        beachBall.vz += bnz * 2.2;
+        beachBall.vy = 1.25;
+        beachBall.boopCooldown = 1.4;
+        spawnSplash(beachBall.x, beachBall.z, 0.55);
+        Sound.ballBoop();
+        penguinChirp(p, 'happy');
+      }
+
+      if (d > 0.35) {
+        p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 4.5, dt);
+        const spd = bubblePartyTimer > 0 ? 1.85 : 1.15;
+        const nx = p.x + Math.sin(p.yaw) * spd * dt;
+        const nz = p.z + Math.cos(p.yaw) * spd * dt;
+        if (isPointInWater(nx, nz)) {
+          p.x = nx; p.z = nz;
+        } else {
+          const [sx, sz] = pickRandomSwimSpot();
+          p.targetX = sx; p.targetZ = sz;
+        }
+        const desiredY = bubblePartyTimer > 0 ? -0.32 : p.targetY;
+        const floorY = getTerrainHeight(p.x, p.z) + 0.22;
+        p.y = damp(p.y, Math.max(floorY, desiredY + Math.sin(simTime * 2.6 + p.seed) * 0.08), 4.5, dt);
+        // Sleek horizontal swim pitch underwater vs upright floating near surface
+        const submergeAmt = smoothstep(-0.18, -0.45, p.y);
+        p.pitch = damp(p.pitch, lerp(0.18, 1.32, submergeAmt), 5, dt);
+        wantFlipperFlap = lerp(0.35, 0.95, submergeAmt);
+        if (p.y > -0.35 && Math.random() < dt * 4.5) addRipple(p.x, p.z, 0.26);
+        if (p.y < -0.32 && Math.random() < dt * 6) {
+          spawnParticle('bubble', p.x, p.y + 0.12, p.z, 0, 0.42, 0, 0.36, 0.9, [0.88, 0.98, 1.0]);
+        }
+      } else {
+        // Reached swim waypoint -> pick next action!
+        const landCount = penguins.filter(o => !o.inWater).length;
+        if (bubblePartyTimer > 0 && Math.random() < 0.48) {
+          startPorpoiseJump(p);
+        } else if (Math.random() < 0.24) {
+          // Swim to play with the beach ball!
+          p.targetX = beachBall.x;
+          p.targetZ = beachBall.z;
+          p.targetY = -0.22;
+        } else if (p.stateTimer <= 0 && landCount < 2 && Math.random() < 0.45) {
+          // Exit water at the front cove!
+          p.state = 'exit_water';
+          p.targetX = 0.05 + (Math.random() - 0.5) * 0.7;
+          p.targetZ = 1.65;
+        } else {
+          const [sx, sz] = pickRandomSwimSpot();
+          p.targetX = sx; p.targetZ = sz;
+          p.targetY = Math.random() < 0.55 ? -0.24 : -0.62;
+          p.stateTimer = 2.5 + Math.random() * 3.0;
+        }
+      }
+    }
+
+    else if (p.state === 'exit_water') {
+      const dx = p.targetX - p.x, dz = p.targetZ - p.z;
+      const d = Math.hypot(dx, dz);
+      p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 5.5, dt);
+      if (d > 0.25) {
+        p.x += (dx / d) * 1.15 * dt;
+        p.z += (dz / d) * 1.15 * dt;
+        const ty = getTerrainHeight(p.x, p.z);
+        if (ty >= -0.08) {
+          p.inWater = false;
+          p.y = ty;
+          p.pitch = damp(p.pitch, 0, 8, dt);
+          p.stepPhase += dt * 10;
+          p.stepAmp = 0.9;
+        } else {
+          p.y = damp(p.y, -0.22, 6, dt);
+          p.pitch = damp(p.pitch, 0.55, 6, dt);
+        }
+      } else {
+        p.inWater = false;
+        p.pitch = 0;
+        p.y = getTerrainHeight(p.x, p.z);
+        p.shakeTimer = 0.95; // Adorable dry-off shake right after leaving the pool!
+        p.state = 'idle_land';
+        p.stateTimer = 2.6 + Math.random() * 2.5;
+        penguinChirp(p, 'curious');
+      }
+    }
+
+    else {
+      // --- idle_land (waddling, curious head tilts, preening, occasional diving/sliding!) ---
+      p.stateTimer -= dt;
+      p.pitch = damp(p.pitch, 0, 7, dt);
+      const dx = p.targetX - p.x, dz = p.targetZ - p.z;
+      const d = Math.hypot(dx, dz);
+
+      if (d > 0.16) {
+        p.yaw = dampAngle(p.yaw, Math.atan2(dx, dz), 5.5, dt);
+        const nx = p.x + (dx / d) * 0.78 * dt;
+        const nz = p.z + (dz / d) * 0.78 * dt;
+        if (!isPointInWater(nx, nz)) {
+          p.x = nx; p.z = nz;
+          p.y = damp(p.y, getTerrainHeight(p.x, p.z), 14, dt);
+          p.stepPhase += dt * 9.8;
+          p.stepAmp = damp(p.stepAmp, 1.0, 8, dt);
+        } else {
+          p.targetX = p.x; p.targetZ = p.z;
+        }
+      } else {
+        p.stepAmp = damp(p.stepAmp, 0, 8, dt);
+        p.y = damp(p.y, getTerrainHeight(p.x, p.z), 14, dt);
+        // Warmly look slightly toward viewer or a friend, tilting head adorably
+        const camYaw = Math.atan2(camPos[0]*0.3 - p.x, camPos[2]*0.7 - p.z);
+        p.yaw = dampAngle(p.yaw, camYaw, 1.8, dt);
+        wantHeadTilt = Math.sin(simTime * 1.15 + p.seed * 2.1) * 0.16;
+
+        // Occasional cute preening (tuck beak gently toward shoulder)
+        if (p.preenTimer > 0) {
+          p.preenTimer -= dt;
+          p.headYaw = damp(p.headYaw, 0.78, 7, dt);
+          p.headPitch = damp(p.headPitch, 0.42, 7, dt);
+          wantTailWag = 0.35;
+        }
+      }
+
+      // Notice nearby sliding ice cube!
+      if (slidingIces.length > 0 && d <= 0.25) {
+        const ic = slidingIces[0];
+        const id = Math.hypot(ic.x - p.x, ic.z - p.z);
+        if (id < 1.8) {
+          lookTarget = [ic.x, ic.y, ic.z];
+          if (id < 0.45 && !ic.inWater) {
+            ic.vx += Math.sin(p.yaw) * 1.6;
+            ic.vz += Math.cos(p.yaw) * 1.6;
+            Sound.iceClink();
+            penguinChirp(p, 'curious');
+          }
+        }
+      }
+
+      if (p.stateTimer <= 0) {
+        const waterCount = penguins.filter(o => o.inWater).length;
+        const r = Math.random();
+        if ((bubblePartyTimer > 0 || (waterCount < 2 && r < 0.22)) && p.diveCooldown <= 0) {
+          // Dive into the sparkling pool!
+          const [sx, sz] = pickRandomSwimSpot();
+          startPenguinDive(p, sx, sz);
+        } else if (r < 0.34 && p.name === 'Hina' && p.diveCooldown <= 0) {
+          p.state = 'toboggan_walk';
+          p.targetX = -2.72; p.targetZ = 0.22;
+          p.stateTimer = 6.0;
+        } else if (r < 0.52) {
+          p.preenTimer = 1.4;
+          p.stateTimer = 2.6 + Math.random() * 2.0;
+        } else if (r < 0.65 && p.wetness > 0.25) {
+          p.shakeTimer = 0.85;
+          p.stateTimer = 2.2;
+        } else {
+          const [lx, lz] = pickRandomLandSpot(p);
+          p.targetX = lx; p.targetZ = lz;
+          p.stateTimer = 3.2 + Math.random() * 3.5;
+        }
+      }
+    }
+
+    // --- Soft Penguin-Penguin Separation (no overlapping!) ---
+    for (const o of penguins) {
+      if (o === p) continue;
+      if (p.inWater !== o.inWater) continue;
+      if (p.state === 'diving' || p.state === 'porpoise' || p.state === 'toboggan') continue;
+      const dx = p.x - o.x, dz = p.z - o.z;
+      const d = Math.hypot(dx, dz);
+      const minD = 0.56;
+      if (d > 0.001 && d < minD) {
+        const push = (minD - d) * 2.4 * dt;
+        const nx = p.x + (dx / d) * push;
+        const nz = p.z + (dz / d) * push;
+        if (p.inWater ? isPointInWater(nx, nz) : !isPointInWater(nx, nz)) {
+          p.x = nx; p.z = nz;
+        }
+      }
+    }
+
+    // --- Smooth Head Tracking & Expressive Secondary Motion ---
+    if (p.state !== 'eating' && p.preenTimer <= 0) {
+      const toLookYaw = Math.atan2(lookTarget[0] - p.x, lookTarget[2] - p.z);
+      const relYaw = clamp(angleDiff(p.yaw, toLookYaw), -0.95, 0.95);
+      const horizL = Math.hypot(lookTarget[0] - p.x, lookTarget[2] - p.z) + 0.001;
+      const relPitch = clamp(-Math.atan2(lookTarget[1] - (p.y + 0.68 * p.scale), horizL), -0.68, 0.45);
+      p.headYaw = damp(p.headYaw, relYaw, 7.5, dt);
+      p.headPitch = damp(p.headPitch, relPitch, 7.5, dt);
+    }
+    p.headTilt = damp(p.headTilt, wantHeadTilt, 6.0, dt);
+    p.beakOpen = damp(p.beakOpen, wantBeakOpen, 14.0, dt);
+    p.happyEyes = damp(p.happyEyes, wantHappyEyes, 10.0, dt);
+    p.tailWag = damp(p.tailWag, wantTailWag, 8.0, dt);
+    p.bellySlide = damp(p.bellySlide, wantBellySlide, 7.0, dt);
+
+    // Flipper articulation (flap, swim stroke, or cute relaxed balance)
+    if (p.inWater) {
+      const stroke = Math.sin(simTime * (5.5 + wantFlipperFlap * 5.0) + p.seed);
+      p.flipperL = damp(p.flipperL, stroke * 0.72, 10, dt);
+      p.flipperR = damp(p.flipperR, stroke * 0.72, 10, dt);
+      p.flipperSpread = damp(p.flipperSpread, 0.68 + Math.cos(simTime * 6 + p.seed) * 0.25, 8, dt);
+    } else {
+      const flap = Math.sin(simTime * (12.0 + wantFlipperFlap * 11.0) + p.seed) * wantFlipperFlap;
+      const idleSway = Math.sin(p.stepPhase) * 0.14 * p.stepAmp;
+      p.flipperL = damp(p.flipperL, flap * 0.45 + idleSway, 12, dt);
+      p.flipperR = damp(p.flipperR, flap * 0.45 - idleSway, 12, dt);
+      p.flipperSpread = damp(p.flipperSpread, 0.14 + wantFlipperFlap * 0.62 + p.stepAmp * 0.18 + Math.abs(flap) * 0.28, 10, dt);
+    }
+  }
+}
+
+// ============================================================================
+// 10. WORLD OBJECTS SIMULATION (FISH, BALL, ICE, WATERFALL, PARTICLES)
+// ============================================================================
+function updateWorld(dt) {
+  // Bucket rattle decay & automatic fish refill
+  bucketShake = Math.max(0, bucketShake - dt * 3.8);
+  bucketJiggleTime += dt;
+  for (const bf of bucketFish) {
+    if (!bf.present) {
+      bf.refillTimer -= dt;
+      if (bf.refillTimer <= 0) {
+        bf.present = true;
+        bf.variant = pickNextFishVariant();
+        bf.popAnim = 0.01;
+      }
+    } else if (bf.popAnim < 1) {
+      bf.popAnim = Math.min(1, bf.popAnim + dt * 3.2);
+    }
+  }
+
+  // Waterfall mist & sunlit rainbow arc
+  if (rainbowTimer > 0) rainbowTimer = Math.max(0, rainbowTimer - dt);
+  if (bubblePartyTimer > 0) bubblePartyTimer = Math.max(0, bubblePartyTimer - dt);
+  const wfBoost = clamp(rainbowTimer * 0.22, 0, 1);
+  Sound.setWaterfallBoost(wfBoost);
+
+  // Waterfall continuous base foam + mist droplets
+  if (Math.random() < dt * (14 + wfBoost * 24)) {
+    const wx = -1.35 + (Math.random() - 0.5) * 0.72;
+    const wz = -2.42 + (Math.random() - 0.5) * 0.28;
+    spawnParticle('drop', wx, WATER_Y + 0.06, wz,
+      (Math.random() - 0.5) * (0.6 + wfBoost * 0.9),
+      0.7 + Math.random() * (0.9 + wfBoost * 1.1),
+      0.4 + Math.random() * 0.7,
+      0.38 + Math.random() * 0.4, 0.55 + Math.random() * 0.35, [0.92, 0.99, 1.0]);
+    if (Math.random() < 0.25) addRipple(wx, wz, 0.24 + wfBoost * 0.22);
+  }
+
+  // Floor bubble-jet party vents!
+  if (bubblePartyTimer > 0 && Math.random() < dt * 26) {
+    const bx = (Math.random() - 0.5) * 3.6;
+    const bz = -0.55 + (Math.random() - 0.5) * 2.2;
+    const by = getTerrainHeight(bx, bz);
+    if (by < -0.3) {
+      spawnParticle('bubble', bx, by + 0.08, bz,
+        (Math.random() - 0.5) * 0.25, 0.85 + Math.random() * 0.65, (Math.random() - 0.5) * 0.25,
+        0.55 + Math.random() * 0.95, 2.2 + Math.random() * 1.4, [0.92, 0.99, 1.0]);
+      if (Math.random() < 0.14) Sound.bubble();
+    }
+  }
+
+  // Active fish physics (airborne throws, sinking/gliding in water, wiggling on rocks)
+  for (let i = activeFish.length - 1; i >= 0; i--) {
+    const f = activeFish[i];
+    f.age += dt;
+    if (f.state === 'held' || f.state === 'eaten') continue;
+
+    if (f.state === 'air') {
+      f.vy -= 8.8 * dt;
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+      f.z += f.vz * dt;
+      const spdH = Math.hypot(f.vx, f.vz);
+      if (spdH > 0.08) f.yaw = Math.atan2(f.vx, f.vz);
+      f.pitch = clamp(-Math.atan2(f.vy, Math.max(0.2, spdH)), -1.1, 1.1);
+      f.wiggle = 1.15;
+
+      // Mid-air catch by a nearby eager penguin!
+      let caught = false;
+      for (const p of penguins) {
+        if (p.state === 'eating' || p.state === 'diving' || p.state === 'fetch_gift') continue;
+        const tip = getBeakTipWorldPos(p);
+        if (V3.dist(tip, [f.x, f.y, f.z]) < 0.55) {
+          triggerPenguinEat(p, f);
+          caught = true;
+          break;
+        }
+      }
+      if (caught) continue;
+
+      // Hit water or rock terrain
+      const ty = getTerrainHeight(f.x, f.z);
+      if (f.y <= WATER_Y && ty < WATER_Y - 0.08) {
+        f.state = 'water';
+        f.y = WATER_Y - 0.05;
+        f.vx *= 0.35; f.vy = -0.55; f.vz *= 0.35;
+        spawnSplash(f.x, f.z, 0.52);
+        Sound.splash(0.45);
+      } else if (f.y <= ty + 0.055) {
+        f.y = ty + 0.055;
+        if (ty < WATER_Y - 0.05) {
+          f.state = 'water';
+        } else {
+          f.state = 'land';
+          f.vx *= 0.2; f.vy = 0; f.vz *= 0.2;
+          f.roll = Math.PI * 0.5;
+          f.pitch = 0;
+        }
+      }
+      // Safety bounds
+      if (f.y < -4 || Math.abs(f.x) > 8 || Math.abs(f.z) > 8) {
+        activeFish.splice(i, 1);
+      }
+    } else if (f.state === 'water') {
+      // Gently glide and glint underwater while penguins dive & chase it!
+      const ty = getTerrainHeight(f.x, f.z);
+      f.vx *= Math.exp(-2.2 * dt);
+      f.vz *= Math.exp(-2.2 * dt);
+      f.yaw += Math.sin(simTime * 2.5 + i) * 0.4 * dt;
+      f.x += (f.vx + Math.sin(f.yaw) * 0.16) * dt;
+      f.z += (f.vz + Math.cos(f.yaw) * 0.16) * dt;
+      // Keep gently inside pool
+      if (!isPointInWater(f.x, f.z)) {
+        f.yaw += Math.PI * 0.7;
+        f.x = lerp(f.x, 0.05, 0.08);
+        f.z = lerp(f.z, -0.5, 0.08);
+      }
+      const targetY = clamp(ty + 0.32, -0.85, -0.22);
+      f.y = damp(f.y, targetY + Math.sin(simTime * 3.1 + i) * 0.04, 2.5, dt);
+      f.pitch = damp(f.pitch, 0, 5, dt);
+      f.roll = damp(f.roll, 0, 5, dt);
+      f.wiggle = 0.85;
+    } else if (f.state === 'land') {
+      f.vx *= Math.exp(-6 * dt);
+      f.vz *= Math.exp(-6 * dt);
+      f.x += f.vx * dt;
+      f.z += f.vz * dt;
+      f.y = getTerrainHeight(f.x, f.z) + 0.05;
+      f.wiggle = 0.35 + Math.max(0, Math.sin(simTime * 6 + i * 2)) * 0.4;
+    }
+  }
+
+  // Floating Pastel Beach Ball Physics
+  beachBall.boopCooldown = Math.max(0, beachBall.boopCooldown - dt);
+  beachBall.vy -= 7.8 * dt;
+  beachBall.x += beachBall.vx * dt;
+  beachBall.y += beachBall.vy * dt;
+  beachBall.z += beachBall.vz * dt;
+  const ballFloor = getTerrainHeight(beachBall.x, beachBall.z);
+  const inBallWater = ballFloor < WATER_Y - 0.12;
+  if (inBallWater && beachBall.y < WATER_Y + 0.14) {
+    // Buoyant float & splash!
+    if (beachBall.vy < -0.9) {
+      spawnSplash(beachBall.x, beachBall.z, clamp(-beachBall.vy * 0.22, 0.25, 0.75));
+      Sound.splash(0.32);
+    }
+    const sub = (WATER_Y + 0.14) - beachBall.y;
+    beachBall.vy += sub * 24.0 * dt;
+    beachBall.vy *= Math.exp(-3.8 * dt);
+    beachBall.vx *= Math.exp(-1.2 * dt);
+    beachBall.vz *= Math.exp(-1.2 * dt);
+    // Gentle sunlit pool drift
+    beachBall.vx += Math.sin(simTime * 0.7) * 0.08 * dt;
+    beachBall.vz += Math.cos(simTime * 0.6) * 0.08 * dt;
+  } else if (beachBall.y < ballFloor + beachBall.radius) {
+    beachBall.y = ballFloor + beachBall.radius;
+    if (beachBall.vy < -0.5) {
+      beachBall.vy = -beachBall.vy * 0.45;
+      Sound.ballBoop();
+    } else {
+      beachBall.vy = 0;
+    }
+    // Gently roll back toward pool if pushed onto steep shore
+    const n = getTerrainNormal(beachBall.x, beachBall.z);
+    beachBall.vx += n[0] * 3.5 * dt;
+    beachBall.vz += n[2] * 3.5 * dt;
+    beachBall.vx *= Math.exp(-2.5 * dt);
+    beachBall.vz *= Math.exp(-2.5 * dt);
+  }
+  // Keep beach ball comfortably in view
+  const bdx = beachBall.x - 0.1, bdz = beachBall.z + 0.55;
+  const bdist = Math.hypot(bdx / 2.6, bdz / 1.9);
+  if (bdist > 1.0) {
+    beachBall.vx -= bdx * 1.2 * dt;
+    beachBall.vz -= bdz * 1.2 * dt;
+  }
+  beachBall.rotX += beachBall.vz * 2.4 * dt;
+  beachBall.rotZ -= beachBall.vx * 2.4 * dt;
+
+  // Sliding Ice Cubes
+  for (let i = slidingIces.length - 1; i >= 0; i--) {
+    const ic = slidingIces[i];
+    ic.life -= dt;
+    ic.vy -= 8.5 * dt;
+    ic.x += ic.vx * dt;
+    ic.y += ic.vy * dt;
+    ic.z += ic.vz * dt;
+    ic.yaw += ic.spin * dt;
+    const ty = getTerrainHeight(ic.x, ic.z);
+    if (ty < WATER_Y - 0.08 && ic.y <= WATER_Y + 0.02) {
+      if (!ic.inWater) {
+        ic.inWater = true;
+        spawnSplash(ic.x, ic.z, 0.32);
+        Sound.splash(0.25);
+      }
+      ic.y = damp(ic.y, WATER_Y + 0.015 + Math.sin(simTime * 4 + i) * 0.012, 8, dt);
+      ic.vy = 0;
+      ic.vx *= Math.exp(-1.8 * dt);
+      ic.vz *= Math.exp(-1.8 * dt);
+      ic.spin *= Math.exp(-1.5 * dt);
+    } else if (ic.y < ty + 0.05) {
+      ic.y = ty + 0.05;
+      ic.vy = Math.abs(ic.vy) > 0.6 ? -ic.vy * 0.3 : 0;
+      // Low slippery ice friction!
+      const n = getTerrainNormal(ic.x, ic.z);
+      ic.vx += n[0] * 1.8 * dt;
+      ic.vz += n[2] * 1.8 * dt;
+      ic.vx *= Math.exp(-0.9 * dt);
+      ic.vz *= Math.exp(-0.9 * dt);
+      ic.spin *= Math.exp(-1.2 * dt);
+    }
+    if (ic.life <= 0) slidingIces.splice(i, 1);
+  }
+
+  // Placed Gift Shells pop-in & shimmer decay
+  for (const g of placedGifts) {
+    g.pop = Math.min(1, g.pop + dt * 3.5);
+    g.shimmer = Math.max(0, g.shimmer - dt * 1.8);
+  }
+
+  // Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const pt = particles[i];
+    pt.life -= dt;
+    if (pt.life <= 0) {
+      particles.splice(i, 1);
+      continue;
+    }
+    if (pt.type === 'drop') {
+      pt.vy -= 6.8 * dt;
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      pt.z += pt.vz * dt;
+      if (pt.y < WATER_Y && pt.vy < 0 && isPointInWater(pt.x, pt.z)) {
+        pt.life = 0;
+      }
+    } else if (pt.type === 'bubble') {
+      pt.x += (pt.vx + Math.sin(simTime * 5 + i) * 0.14) * dt;
+      pt.y += pt.vy * dt;
+      pt.z += (pt.vz + Math.cos(simTime * 4.5 + i) * 0.14) * dt;
+      if (pt.y > WATER_Y + 0.02 && pt.y < WATER_Y + 0.12 && pt.vy > 0) {
+        // Gentle shimmer float slightly into sunny air!
+        pt.vy *= 0.96;
+      }
+    } else {
+      // Golden sunlit sparkle mote
+      pt.x += (pt.vx + Math.sin(simTime * 3.8 + i) * 0.16) * dt;
+      pt.y += pt.vy * dt;
+      pt.z += pt.vz * dt;
+      pt.vx *= Math.exp(-1.5 * dt);
+      pt.vz *= Math.exp(-1.5 * dt);
+    }
+  }
+}
+
+// ============================================================================
+// 11. CAMERA, RAYCASTING & CHILD-FRIENDLY TAP/DRAG INTERACTION
+// ============================================================================
+const projMat = M4.create();
+const viewMat = M4.create();
+const viewProjMat = M4.create();
+const invViewProjMat = M4.create();
+const lightViewProjMat = M4.create();
+
+const SUN_DIR = V3.norm([0.46, 0.82, 0.34]);
+let camPos = [0.0, 3.72, 7.65];
+let camTarget = [0.0, 0.38, 0.12];
+let camLookShiftX = 0;
+let camLookShiftY = 0;
+
+function updateLightMatrix() {
+  const lv = M4.create(), lp = M4.create();
+  const eye = V3.scale(SUN_DIR, 14.0);
+  M4.lookAt(lv, eye, [0, 0.2, -0.3], [0, 1, 0]);
+  M4.ortho(lp, -6.2, 6.2, -5.2, 5.2, 1.0, 28.0);
+  M4.multiply(lightViewProjMat, lp, lv);
+}
+updateLightMatrix();
+
+function resizeCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+  const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function updateCamera(dt) {
+  const aspect = canvas.width / Math.max(1, canvas.height);
+  // Gracefully widen FOV and pull back slightly on portrait phones/tablets so the bucket & full pool stay reachable!
+  const portraitBoost = aspect < 1.15 ? clamp((1.15 - aspect) * 0.95, 0, 0.58) : 0;
+  const fovy = (38 + portraitBoost * 20) * Math.PI / 180;
+
+  // Very gentle, calm breathing camera + subtle follow when holding a fish
+  const wantShiftX = heldFish ? clamp(heldFish.x * 0.08, -0.25, 0.25) : Math.sin(simTime * 0.22) * 0.12;
+  const wantShiftY = Math.cos(simTime * 0.19) * 0.04;
+  camLookShiftX = damp(camLookShiftX, wantShiftX, 2.5, dt);
+  camLookShiftY = damp(camLookShiftY, wantShiftY, 2.5, dt);
+
+  camPos = [
+    camLookShiftX * 0.9,
+    3.68 + portraitBoost * 1.15 + camLookShiftY,
+    7.45 + portraitBoost * 1.55
+  ];
+  camTarget = [camLookShiftX * 0.35, 0.36, 0.15];
+
+  M4.perspective(projMat, fovy, aspect, 0.15, 65.0);
+  M4.lookAt(viewMat, camPos, camTarget, [0, 1, 0]);
+  M4.multiply(viewProjMat, projMat, viewMat);
+  M4.invert(invViewProjMat, viewProjMat);
+}
+
+function getRayFromClient(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = 1 - ((clientY - rect.top) / rect.height) * 2;
+  const pNear = M4.transformPoint(invViewProjMat, [nx, ny, -1]);
+  const pFar  = M4.transformPoint(invViewProjMat, [nx, ny,  1]);
+  return { origin: pNear, dir: V3.norm(V3.sub(pFar, pNear)) };
+}
+
+function raySphereDist(ray, center, rad) {
+  const oc = V3.sub(ray.origin, center);
+  const b = V3.dot(oc, ray.dir);
+  const c = V3.dot(oc, oc) - rad * rad;
+  const disc = b * b - c;
+  if (disc < 0) return -1;
+  const t = -b - Math.sqrt(disc);
+  return t > 0 ? t : -1;
+}
+
+function rayIntersectWater(ray) {
+  if (Math.abs(ray.dir[1]) < 1e-4) return null;
+  const t = (WATER_Y - ray.origin[1]) / ray.dir[1];
+  if (t <= 0 || t > 25) return null;
+  return V3.add(ray.origin, V3.scale(ray.dir, t));
+}
+
+function rayIntersectTerrain(ray) {
+  // Fast sphere-march / binary refine against terrain heightfield
+  let t = 0.5;
+  for (let i = 0; i < 40; i++) {
+    const p = V3.add(ray.origin, V3.scale(ray.dir, t));
+    const h = getTerrainHeight(p[0], p[2]);
+    if (p[1] <= h) {
+      let lo = Math.max(0.1, t - 0.35), hi = t;
+      for (let k = 0; k < 6; k++) {
+        const mid = (lo + hi) * 0.5;
+        const mp = V3.add(ray.origin, V3.scale(ray.dir, mid));
+        if (mp[1] <= getTerrainHeight(mp[0], mp[2])) hi = mid; else lo = mid;
+      }
+      return V3.add(ray.origin, V3.scale(ray.dir, (lo + hi) * 0.5));
+    }
+    t += 0.32;
+    if (t > 16) break;
+  }
+  return null;
+}
+
+// Compute comfortable 3D drag point for a held fish above rocks & pool
+function getFishDragTarget(ray) {
+  let pt = rayIntersectTerrain(ray);
+  const wp = rayIntersectWater(ray);
+  if (wp && (!pt || wp[2] < pt[2])) {
+    if (isPointInWater(wp[0], wp[2])) pt = wp;
+  }
+  if (!pt) pt = V3.add(ray.origin, V3.scale(ray.dir, 6.2));
+  const x = clamp(pt[0], -3.4, 3.4);
+  const z = clamp(pt[2], -2.6, 3.25);
+  const ground = Math.max(WATER_Y, getTerrainHeight(x, z));
+  let y = ground + 0.72;
+
+  // Soft magnetic assist toward a nearby penguin's eager open beak!
+  let bestP = null, bestD = 0.95;
+  for (const p of penguins) {
+    if (p.state === 'eating' || p.state === 'diving') continue;
+    const tip = getBeakTipWorldPos(p);
+    const d = Math.hypot(x - tip[0], z - tip[2]);
+    if (d < bestD) { bestD = d; bestP = p; }
+  }
+  if (bestP) {
+    const tip = getBeakTipWorldPos(bestP);
+    const pull = smoothstep(0.95, 0.25, bestD) * 0.65;
+    return [lerp(x, tip[0], pull), lerp(y, tip[1] + 0.08, pull), lerp(z, tip[2], pull)];
+  }
+  return [x, y, z];
+}
+
+// Pointer Interaction State
+let activePointerId = null;
+let dragMode = null; // 'fish' | 'pet' | 'water' | 'ball'
+let dragStartTime = 0;
+let dragStartXY = [0, 0];
+let dragMovedDist = 0;
+let dragVel3 = [0, 0, 0];
+let lastFishPos = [0, 0, 0];
+let pettedPenguin = null;
+let lastWaterRippleTime = 0;
+let lastPetSparkleTime = 0;
+
+function pickFishFromBucket(ray) {
+  // Find a present bucket fish (prefer closest or special variant)
+  let slot = bucketFish.find(bf => bf.present && bf.variant === 3)
+          || bucketFish.find(bf => bf.present);
+  let variant = slot ? slot.variant : pickNextFishVariant();
+  if (slot) {
+    slot.present = false;
+    slot.refillTimer = 2.6;
+  }
+  bucketShake = 1.0;
+  Sound.bucketClink();
+  Sound.iceClink();
+  spawnHappySparkles(BUCKET_POS[0], BUCKET_POS[1] + 0.56, BUCKET_POS[2], 6, false);
+
+  const startPos = getFishDragTarget(ray);
+  const f = createWorldFish(
+    lerp(BUCKET_POS[0], startPos[0], 0.45),
+    BUCKET_POS[1] + 0.72,
+    lerp(BUCKET_POS[2], startPos[2], 0.45),
+    variant
+  );
+  heldFish = f;
+  lastFishPos = [f.x, f.y, f.z];
+  dragVel3 = [0, 0, 0];
+
+  // Wake up penguins' curiosity immediately!
+  for (const p of penguins) {
+    if (p.state === 'idle_land' || p.state === 'swim_cruise') {
+      penguinChirp(p, 'curious');
+    }
+  }
+}
+
+function petPenguin(p) {
+  if (p.state === 'eating' || p.state === 'diving' || p.state === 'porpoise' || p.state === 'toboggan') return;
+  const wasPetted = p.state === 'petted';
+  p.state = 'petted';
+  p.petTimer = 1.45;
+  p.squash = 0.90;
+  if (!wasPetted) {
+    penguinChirp(p, 'coo');
+    spawnHappySparkles(p.x, p.y + 0.62 * p.scale, p.z, 8, true);
+    if (p.wetness > 0.3) p.shakeTimer = 0.5;
+  }
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  Sound.unlock();
+  if (activePointerId !== null) return;
+  activePointerId = e.pointerId;
+  canvas.setPointerCapture(e.pointerId);
+  dragStartTime = performance.now();
+  dragStartXY = [e.clientX, e.clientY];
+  dragMovedDist = 0;
+
+  const ray = getRayFromClient(e.clientX, e.clientY);
+
+  // 1. Check Fish Bucket (very generous touch target for 5-year-old hands!)
+  const bucketCenter = [BUCKET_POS[0], BUCKET_POS[1] + 0.34, BUCKET_POS[2]];
+  if (raySphereDist(ray, bucketCenter, 0.76) > 0) {
+    dragMode = 'fish';
+    pickFishFromBucket(ray);
+    return;
+  }
+
+  // 2. Check Penguins (petting / tickling!)
+  let hitP = null, bestPT = 1e9;
+  for (const p of penguins) {
+    const c = getPenguinCenterWorldPos(p);
+    const t = raySphereDist(ray, c, 0.52 * p.scale);
+    if (t > 0 && t < bestPT) { bestPT = t; hitP = p; }
+  }
+  if (hitP) {
+    dragMode = 'pet';
+    pettedPenguin = hitP;
+    petPenguin(hitP);
+    return;
+  }
+
+  // 3. Check Floating Beach Ball!
+  if (raySphereDist(ray, [beachBall.x, beachBall.y, beachBall.z], 0.52) > 0) {
+    dragMode = 'ball';
+    beachBall.vy = 1.65;
+    beachBall.vx += (Math.random() - 0.5) * 1.4;
+    beachBall.vz -= 0.8 + Math.random() * 0.8;
+    spawnSplash(beachBall.x, beachBall.z, 0.65);
+    Sound.ballBoop();
+    return;
+  }
+
+  // 4. Check Back Waterfall Rock (boosts sparkling mist & sunlit rainbow!)
+  if (raySphereDist(ray, [WATERFALL_POS[0], 0.95, WATERFALL_POS[2] + 0.35], 1.15) > 0) {
+    rainbowTimer = Math.max(rainbowTimer, 9.5);
+    bubblePartyTimer = Math.max(bubblePartyTimer, 6.5);
+    Sound.rainbowShimmer();
+    Sound.splash(0.85);
+    spawnSplash(-1.35, -2.25, 1.05);
+    for (const p of penguins) {
+      if (p.inWater) {
+        p.targetX = -1.15 + (Math.random() - 0.5) * 0.8;
+        p.targetZ = -1.65 + (Math.random() - 0.5) * 0.5;
+        penguinChirp(p, 'happy');
+      }
+    }
+    return;
+  }
+
+  // 5. Check Gifted Seashells / Sea-glass on right foreground ledge!
+  for (let i = 0; i < placedGifts.length; i++) {
+    const g = placedGifts[i];
+    if (raySphereDist(ray, [g.x, g.y + 0.05, g.z], 0.32) > 0) {
+      g.shimmer = 1.0;
+      Sound.shellChime(i);
+      spawnHappySparkles(g.x, g.y + 0.14, g.z, 10, true);
+      return;
+    }
+  }
+
+  // 6. Check Sliding Ice Cubes!
+  for (const ic of slidingIces) {
+    if (raySphereDist(ray, [ic.x, ic.y, ic.z], 0.34) > 0) {
+      ic.vx += (Math.random() - 0.5) * 2.4;
+      ic.vz -= 1.4 + Math.random() * 1.0;
+      ic.vy = 1.1;
+      Sound.iceClink();
+      return;
+    }
+  }
+
+  // 7. Check Crystal Pool Water Surface!
+  const wp = rayIntersectWater(ray);
+  if (wp && isPointInWater(wp[0], wp[2])) {
+    dragMode = 'water';
+    spawnSplash(wp[0], wp[2], 0.62);
+    Sound.splash(0.45);
+    lastWaterRippleTime = simTime;
+    // Swimming penguins playfully turn toward the child's water ripples!
+    for (const p of penguins) {
+      if (p.inWater && p.state === 'swim_cruise') {
+        p.targetX = clamp(wp[0], -2.1, 2.1);
+        p.targetZ = clamp(wp[2], -1.8, 1.0);
+        p.targetY = -0.24;
+      }
+    }
+    return;
+  }
+
+  // 8. Tap on sunny rock -> curious nearby penguin waddles over to check it out!
+  const tp = rayIntersectTerrain(ray);
+  if (tp && !isPointInWater(tp[0], tp[2])) {
+    const [lx, lz] = clampLandSpot(tp[0], tp[2]);
+    let nearest = null, bestD = 3.5;
+    for (const p of penguins) {
+      if (!p.inWater && p.state === 'idle_land') {
+        const d = Math.hypot(p.x - lx, p.z - lz);
+        if (d < bestD) { bestD = d; nearest = p; }
+      }
+    }
+    if (nearest) {
+      nearest.targetX = lx;
+      nearest.targetZ = lz;
+      nearest.stateTimer = 4.0;
+      penguinChirp(nearest, 'curious');
+    }
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerId !== activePointerId) return;
+  dragMovedDist += Math.hypot(e.clientX - dragStartXY[0], e.clientY - dragStartXY[1]);
+  dragStartXY = [e.clientX, e.clientY];
+  const ray = getRayFromClient(e.clientX, e.clientY);
+
+  if (dragMode === 'fish' && heldFish) {
+    const target = getFishDragTarget(ray);
+    const oldX = heldFish.x, oldY = heldFish.y, oldZ = heldFish.z;
+    heldFish.x = lerp(heldFish.x, target[0], 0.55);
+    heldFish.y = lerp(heldFish.y, target[1], 0.55);
+    heldFish.z = lerp(heldFish.z, target[2], 0.55);
+    const dx = heldFish.x - oldX, dy = heldFish.y - oldY, dz = heldFish.z - oldZ;
+    dragVel3 = [
+      lerp(dragVel3[0], dx * 38, 0.35),
+      lerp(dragVel3[1], dy * 38, 0.35),
+      lerp(dragVel3[2], dz * 38, 0.35)
+    ];
+    // Natural dangling fish orientation following drag movement
+    if (Math.hypot(dx, dz) > 0.004) {
+      heldFish.yaw = dampAngle(heldFish.yaw, Math.atan2(dx, dz), 12, 0.03);
+    }
+    heldFish.pitch = clamp(-0.35 + dy * 2.5, -0.9, 0.6);
+    heldFish.roll = clamp(-dx * 4.5, -0.6, 0.6);
+    heldFish.wiggle = 1.35;
+  } else if (dragMode === 'pet' && pettedPenguin) {
+    petPenguin(pettedPenguin);
+    if (simTime - lastPetSparkleTime > 0.22) {
+      lastPetSparkleTime = simTime;
+      spawnHappySparkles(pettedPenguin.x, pettedPenguin.y + 0.58 * pettedPenguin.scale, pettedPenguin.z, 3, true);
+    }
+  } else if (dragMode === 'water') {
+    const wp = rayIntersectWater(ray);
+    if (wp && isPointInWater(wp[0], wp[2]) && simTime - lastWaterRippleTime > 0.07) {
+      lastWaterRippleTime = simTime;
+      addRipple(wp[0], wp[2], 0.52);
+      spawnParticle('drop', wp[0], WATER_Y + 0.05, wp[2],
+        (Math.random()-0.5)*0.9, 0.9 + Math.random()*0.7, (Math.random()-0.5)*0.9, 0.4, 0.42, [0.88, 0.98, 1.0]);
+      if (Math.random() < 0.35) Sound.bubble();
+      for (const p of penguins) {
+        if (p.inWater && p.state === 'swim_cruise') {
+          p.targetX = clamp(wp[0], -2.1, 2.1);
+          p.targetZ = clamp(wp[2], -1.8, 1.0);
+        }
+      }
+    }
+  } else if (dragMode === 'ball') {
+    const wp = rayIntersectWater(ray);
+    if (wp) {
+      const dx = wp[0] - beachBall.x, dz = wp[2] - beachBall.z;
+      beachBall.vx = clamp(dx * 4.5, -4.0, 4.0);
+      beachBall.vz = clamp(dz * 4.5, -4.0, 4.0);
+      if (simTime - lastWaterRippleTime > 0.12) {
+        lastWaterRippleTime = simTime;
+        addRipple(beachBall.x, beachBall.z, 0.38);
+      }
+    }
+  }
+});
+
+function releasePointer(e) {
+  if (e.pointerId !== activePointerId) return;
+  activePointerId = null;
+
+  if (dragMode === 'fish' && heldFish) {
+    const f = heldFish;
+    heldFish = null;
+    const heldMs = performance.now() - dragStartTime;
+
+    // Case 1: Quick tap on the bucket -> toss a shiny fish cheerfully toward an eager penguin or into the pool!
+    if (heldMs < 260 && dragMovedDist < 22) {
+      let tx, tz;
+      if (totalFedCount % 2 === 0) {
+        // Aim gently near an eager land or water penguin
+        const p = penguins[totalFedCount % penguins.length];
+        tx = p.x + (Math.random() - 0.5) * 0.35;
+        tz = p.z + (Math.random() - 0.5) * 0.35;
+      } else {
+        // Toss into the sparkling pool so penguins dive & chase it!
+        [tx, tz] = pickRandomSwimSpot();
+      }
+      const flightT = 0.68;
+      f.state = 'air';
+      f.vx = (tx - f.x) / flightT;
+      f.vz = (tz - f.z) / flightT;
+      f.vy = (0.35 - f.y + 0.5 * 8.8 * flightT * flightT) / flightT;
+      // Occasionally pop a playful skating ice cube too!
+      if (Math.random() < 0.32) spawnSlidingIce();
+    } else {
+      // Case 2: Released near any penguin -> smooth friendly catch!
+      let closestP = null, bestD = 0.92;
+      for (const p of penguins) {
+        if (p.state === 'eating' || p.state === 'diving') continue;
+        const tip = getBeakTipWorldPos(p);
+        const d = V3.dist(tip, [f.x, f.y, f.z]);
+        if (d < bestD) { bestD = d; closestP = p; }
+      }
+      if (closestP) {
+        triggerPenguinEat(closestP, f);
+      } else {
+        // Case 3: Natural parabolic toss using finger flick velocity!
+        f.state = 'air';
+        f.vx = clamp(dragVel3[0] * 0.42, -4.5, 4.5);
+        f.vz = clamp(dragVel3[2] * 0.42, -5.2, 3.2);
+        f.vy = clamp(1.35 + dragVel3[1] * 0.25 + Math.hypot(f.vx, f.vz) * 0.32, 0.8, 4.6);
+      }
+    }
+  }
+
+  dragMode = null;
+  pettedPenguin = null;
+}
+canvas.addEventListener('pointerup', releasePointer);
+canvas.addEventListener('pointercancel', releasePointer);
+
+// ============================================================================
+// 12. RENDER PIPELINE (SHADOW PASS + SKY + PBR + PENGUINS + CRYSTAL WATER + FX)
+// ============================================================================
+const modelMat = M4.create();
+const normalMat = new Float32Array(9);
+const pBodyMat = M4.create();
+const pHeadMat = M4.create();
+const pPartMat = M4.create();
+const emptyVAO = gl.createVertexArray();
+
+function drawShadowMesh(mesh, mat, wiggle = 0) {
+  gl.uniformMatrix4fv(shadowU.uModel, false, mat);
+  gl.uniform1f(shadowU.uFishWiggle, wiggle);
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES, mesh.count, mesh.indexType, 0);
+}
+
+function drawPBRMesh(mesh, mat, matType, baseCol, rough, metal, wet = 0, variant = 0, seed = 0, wiggle = 0) {
+  M4.normalMat3(normalMat, mat);
+  gl.uniformMatrix4fv(pbrU.uModel, false, mat);
+  gl.uniformMatrix3fv(pbrU.uNormalMat, false, normalMat);
+  gl.uniform1i(pbrU.uMatType, matType);
+  gl.uniform3f(pbrU.uBaseColor, baseCol[0], baseCol[1], baseCol[2]);
+  gl.uniform1f(pbrU.uRoughness, rough);
+  gl.uniform1f(pbrU.uMetalness, metal);
+  gl.uniform1f(pbrU.uWetness, wet);
+  gl.uniform1f(pbrU.uVariant, variant);
+  gl.uniform1f(pbrU.uPenguinSeed, seed);
+  gl.uniform1f(pbrU.uFishWiggle, wiggle);
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES, mesh.count, mesh.indexType, 0);
+}
+
+function drawFXMesh(mesh, mat, mode, col4) {
+  M4.normalMat3(normalMat, mat);
+  gl.uniformMatrix4fv(fxU.uModel, false, mat);
+  gl.uniformMatrix3fv(fxU.uNormalMat, false, normalMat);
+  gl.uniform1i(fxU.uFxMode, mode);
+  gl.uniform4f(fxU.uColor, col4[0], col4[1], col4[2], col4[3]);
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES, mesh.count, mesh.indexType, 0);
+}
+
+function drawPenguin(p, isShadow) {
+  computePenguinBodyMatrix(p, pBodyMat);
+  getPenguinHeadMatrix(p, pBodyMat, pHeadMat);
+
+  if (isShadow) {
+    drawShadowMesh(MESH.pBody, pBodyMat);
+    drawShadowMesh(MESH.pHead, pHeadMat);
+    // Flippers in shadow
+    for (const side of [1, -1]) {
+      M4.copy(pPartMat, pBodyMat);
+      M4.translate(pPartMat, side * 0.205, 0.50, 0.01);
+      M4.rotateZ(pPartMat, side * p.flipperSpread);
+      M4.rotateX(pPartMat, side > 0 ? p.flipperL : p.flipperR);
+      drawShadowMesh(side > 0 ? MESH.pFlipL : MESH.pFlipR, pPartMat);
+    }
+    return;
+  }
+
+  // Body (Cape Penguin tuxedo + horseshoe chest stripe + belly speckles!)
+  drawPBRMesh(MESH.pBody, pBodyMat, 2, [1,1,1], 0.68, 0.0, p.wetness, 0, p.seed);
+
+  // Cute stubby wagging tail
+  M4.copy(pPartMat, pBodyMat);
+  M4.translate(pPartMat, 0, 0.14, -0.175);
+  M4.rotateY(pPartMat, Math.sin(simTime * 22.0 + p.seed) * 0.34 * (0.15 + p.tailWag));
+  drawPBRMesh(MESH.pTail, pPartMat, 0, [1,1,1], lerp(0.66, 0.22, p.wetness), 0.0);
+
+  // Articulated Flippers (Left & Right)
+  for (const side of [1, -1]) {
+    M4.copy(pPartMat, pBodyMat);
+    M4.translate(pPartMat, side * 0.202, 0.51, 0.012);
+    M4.rotateZ(pPartMat, side * p.flipperSpread);
+    M4.rotateX(pPartMat, side > 0 ? p.flipperL : p.flipperR);
+    drawPBRMesh(side > 0 ? MESH.pFlipL : MESH.pFlipR, pPartMat, 0, [1,1,1], lerp(0.62, 0.20, p.wetness), 0.0);
+  }
+
+  // Articulated Webbed Feet (animated waddle!)
+  for (const side of [1, -1]) {
+    const phase = p.stepPhase + (side > 0 ? 0 : Math.PI);
+    const lift = p.inWater ? 0 : Math.max(0, Math.sin(phase)) * 0.048 * p.stepAmp;
+    const stride = p.inWater ? -0.05 : Math.cos(phase) * 0.055 * p.stepAmp;
+    M4.copy(pPartMat, pBodyMat);
+    M4.translate(pPartMat, side * 0.095, 0.006 + lift, 0.02 + stride);
+    M4.rotateY(pPartMat, side * 0.18);
+    M4.rotateX(pPartMat, p.inWater ? 1.1 : -lift * 4.5);
+    drawPBRMesh(MESH.pFoot, pPartMat, 0, [1,1,1], lerp(0.55, 0.22, p.wetness), 0.0);
+  }
+
+  // Head (Cape Penguin white C-stripe + rosy pink eye patch!)
+  drawPBRMesh(MESH.pHead, pHeadMat, 3, [1,1,1], 0.66, 0.0, p.wetness, 0, p.seed);
+
+  // Articulated Upper & Lower Beak (opens wide for fish!)
+  M4.copy(pPartMat, pHeadMat);
+  M4.translate(pPartMat, 0, -0.012, 0.135);
+  M4.rotateX(pPartMat, -p.beakOpen * 0.35);
+  drawPBRMesh(MESH.pBeakU, pPartMat, 4, [1,1,1], 0.28, 0.02);
+
+  M4.copy(pPartMat, pHeadMat);
+  M4.translate(pPartMat, 0, -0.018, 0.132);
+  M4.rotateX(pPartMat, p.beakOpen * 0.72);
+  drawPBRMesh(MESH.pBeakL, pPartMat, 4, [1,1,1], 0.28, 0.02);
+
+  // Glossy Sparkling Eyes + Blinking & Happy-Smiling Crescent Eyelids!
+  for (const side of [1, -1]) {
+    M4.copy(pPartMat, pHeadMat);
+    M4.translate(pPartMat, side * 0.118, 0.022, 0.092);
+    M4.rotateY(pPartMat, side * 0.42);
+    drawPBRMesh(MESH.pEye, pPartMat, 5, [1,1,1], 0.04, 0.05);
+
+    // Upper eyelid (blinks down naturally)
+    if (p.blink > 0.02) {
+      M4.copy(pPartMat, pHeadMat);
+      M4.translate(pPartMat, side * 0.118, 0.022, 0.092);
+      M4.rotateY(pPartMat, side * 0.42);
+      M4.rotateX(pPartMat, lerp(-1.15, 0.05, p.blink));
+      drawPBRMesh(MESH.pLidU, pPartMat, 0, [1,1,1], 0.62, 0.0);
+    }
+    // Lower eyelid rises into adorable smiling crescent (^ ^) when happy or petted!
+    if (p.happyEyes > 0.02 || p.blink > 0.02) {
+      const smileAmt = Math.max(p.happyEyes * 0.92, p.blink * 0.65);
+      M4.copy(pPartMat, pHeadMat);
+      M4.translate(pPartMat, side * 0.118, 0.022, 0.092);
+      M4.rotateY(pPartMat, side * 0.42);
+      M4.rotateX(pPartMat, lerp(1.05, -0.18, smileAmt));
+      drawPBRMesh(MESH.pLidL, pPartMat, 0, [1,1,1], 0.62, 0.0);
+    }
+  }
+
+  // Carried seashell gift in beak when returning from a dive!
+  if (p.carryingGift !== null && !p.inWater) {
+    const slot = GIFT_SLOTS[p.carryingGift];
+    if (slot) {
+      M4.copy(pPartMat, pHeadMat);
+      M4.translate(pPartMat, 0, -0.022, 0.255);
+      M4.rotateX(pPartMat, 0.35);
+      drawPBRMesh(slot[2] === 'shell' ? MESH.shell : MESH.pebble, pPartMat, 9, slot[3], 0.16, 0.18, 0, p.carryingGift);
+    }
+  }
+}
+
+function drawWorldFish(f, isShadow) {
+  if (f.scale <= 0.02) return;
+  M4.identity(modelMat);
+  M4.translate(modelMat, f.x, f.y, f.z);
+  M4.rotateY(modelMat, f.yaw);
+  M4.rotateX(modelMat, f.pitch);
+  M4.rotateZ(modelMat, f.roll);
+  M4.scale(modelMat, f.scale, f.scale, f.scale);
+  if (isShadow) {
+    drawShadowMesh(MESH.fish, modelMat, f.wiggle);
+  } else {
+    drawPBRMesh(MESH.fish, modelMat, 6, [1,1,1], 0.14, 0.72, 0, f.variant, 0, f.wiggle);
+  }
+}
+
+function drawBucketAndFish(isShadow) {
+  const jiggleZ = Math.sin(bucketJiggleTime * 34) * 0.075 * bucketShake;
+  const jiggleX = Math.cos(bucketJiggleTime * 29) * 0.055 * bucketShake;
+  M4.identity(modelMat);
+  M4.translate(modelMat, BUCKET_POS[0], BUCKET_POS[1], BUCKET_POS[2]);
+  M4.rotateY(modelMat, 0.42);
+  // Subtle tilt toward viewer so the shiny fish inside are super inviting!
+  M4.rotateX(modelMat, 0.06 + jiggleX);
+  M4.rotateZ(modelMat, jiggleZ);
+
+  if (isShadow) {
+    drawShadowMesh(MESH.bucket, modelMat);
+  } else {
+    drawPBRMesh(MESH.bucket, modelMat, 7, [1,1,1], 0.30, 0.78);
+  }
+
+  // Visible shimmering fish peeking out of the bucket!
+  for (const bf of bucketFish) {
+    if (!bf.present) continue;
+    const pop = smoothstep(0, 1, bf.popAnim);
+    M4.copy(pPartMat, modelMat);
+    M4.translate(pPartMat, bf.ox, lerp(0.28, 0.43, pop) + Math.sin(simTime * 3 + bf.slot) * 0.005, bf.oz);
+    M4.rotateY(pPartMat, bf.yaw);
+    M4.rotateX(pPartMat, bf.pitch);
+    const sc = (bf.variant === 2 ? 1.12 : 0.96) * pop;
+    M4.scale(pPartMat, sc, sc, sc);
+    if (isShadow) {
+      drawShadowMesh(MESH.fish, pPartMat, 0.25);
+    } else {
+      drawPBRMesh(MESH.fish, pPartMat, 6, [1,1,1], 0.14, 0.72, 0, bf.variant, 0, 0.25);
+    }
+  }
+}
+
+function renderScene() {
+  // === PASS 1: 2048x2048 Sun Shadow Map ===
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.FRONT); // Front-face culling prevents self-shadow acne!
+  gl.useProgram(shadowProg);
+  gl.uniformMatrix4fv(shadowU.uLightViewProj, false, lightViewProjMat);
+  gl.uniform1f(shadowU.uTime, simTime);
+
+  M4.identity(modelMat);
+  drawShadowMesh(MESH.terrain, modelMat);
+  for (const b of BOULDERS) {
+    M4.identity(modelMat);
+    M4.translate(modelMat, b.pos[0], b.pos[1], b.pos[2]);
+    M4.rotateY(modelMat, b.yaw);
+    M4.scale(modelMat, b.scale[0], b.scale[1], b.scale[2]);
+    drawShadowMesh(b.mesh, modelMat);
+  }
+  drawBucketAndFish(true);
+  for (const p of penguins) drawPenguin(p, true);
+  for (const f of activeFish) drawWorldFish(f, true);
+  M4.identity(modelMat);
+  M4.translate(modelMat, beachBall.x, beachBall.y, beachBall.z);
+  drawShadowMesh(MESH.ball, modelMat);
+
+  gl.cullFace(gl.BACK);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  // === PASS 2: Main Viewport — Sunny Sky Dome ===
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  gl.disable(gl.DEPTH_TEST);
+  gl.depthMask(false);
+  gl.disable(gl.CULL_FACE);
+  gl.useProgram(skyProg);
+  gl.uniformMatrix4fv(skyU.uInvViewProj, false, invViewProjMat);
+  gl.uniform3f(skyU.uCamPos, camPos[0], camPos[1], camPos[2]);
+  gl.uniform3f(skyU.uSunDir, SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]);
+  gl.uniform1f(skyU.uTime, simTime);
+  gl.bindVertexArray(emptyVAO);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // === PASS 3: Opaque PBR World & Characters ===
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.useProgram(pbrProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.uniform1i(pbrU.uShadowMap, 0);
+  gl.uniformMatrix4fv(pbrU.uViewProj, false, viewProjMat);
+  gl.uniformMatrix4fv(pbrU.uLightViewProj, false, lightViewProjMat);
+  gl.uniform3f(pbrU.uCamPos, camPos[0], camPos[1], camPos[2]);
+  gl.uniform3f(pbrU.uSunDir, SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]);
+  gl.uniform1f(pbrU.uTime, simTime);
+
+  // Terrain (rocks + submerged sunlit turquoise pool basin!)
+  M4.identity(modelMat);
+  drawPBRMesh(MESH.terrain, modelMat, 1, [1,1,1], 0.82, 0.0);
+
+  // Sculpted Accent Boulders
+  for (const b of BOULDERS) {
+    M4.identity(modelMat);
+    M4.translate(modelMat, b.pos[0], b.pos[1], b.pos[2]);
+    M4.rotateY(modelMat, b.yaw);
+    M4.scale(modelMat, b.scale[0], b.scale[1], b.scale[2]);
+    drawPBRMesh(b.mesh, modelMat, 1, [1,1,1], 0.80, 0.0);
+  }
+
+  // Sunlit Coastal Grass Tufts
+  for (const g of GRASS_SPOTS) {
+    const gy = getTerrainHeight(g[0], g[1]) - 0.04;
+    M4.identity(modelMat);
+    M4.translate(modelMat, g[0], gy, g[1]);
+    M4.rotateY(modelMat, g[3]);
+    M4.scale(modelMat, g[2], g[2], g[2]);
+    drawPBRMesh(MESH.grass, modelMat, 10, [1,1,1], 0.55, 0.0);
+  }
+
+  // Aquarium Back Terrace Steel Posts
+  for (const r of GLASS_RAILS) {
+    for (const s of [-1.14, 1.14]) {
+      M4.identity(modelMat);
+      M4.translate(modelMat, r.pos[0] + Math.cos(r.yaw)*s, r.pos[1], r.pos[2] - Math.sin(r.yaw)*s);
+      M4.rotateY(modelMat, r.yaw);
+      drawPBRMesh(MESH.steelPost, modelMat, 0, [0.85, 0.88, 0.90], 0.22, 0.88);
+    }
+  }
+
+  // Fish Bucket & Visible Fish inside
+  drawBucketAndFish(false);
+
+  // 3 Expressive Cape Penguins!
+  for (const p of penguins) drawPenguin(p, false);
+
+  // Active World Fish (held, flying, swimming, or on rocks)
+  for (const f of activeFish) drawWorldFish(f, false);
+
+  // Sunny Pastel Beach Ball
+  M4.identity(modelMat);
+  M4.translate(modelMat, beachBall.x, beachBall.y, beachBall.z);
+  M4.rotateX(modelMat, beachBall.rotX);
+  M4.rotateZ(modelMat, beachBall.rotZ);
+  drawPBRMesh(MESH.ball, modelMat, 8, [1,1,1], 0.14, 0.02);
+
+  // Pearlescent Gifted Seashells & Sea-Glass on right sunny rock shelf!
+  for (const g of placedGifts) {
+    const sc = (0.9 + g.shimmer * 0.25) * smoothstep(0, 1, g.pop);
+    M4.identity(modelMat);
+    M4.translate(modelMat, g.x, g.y + g.shimmer * 0.05, g.z);
+    M4.rotateY(modelMat, g.yaw + g.shimmer * 0.4);
+    M4.scale(modelMat, sc, sc, sc);
+    drawPBRMesh(g.kind === 'shell' ? MESH.shell : MESH.pebble, modelMat, 9, g.col, 0.14, 0.20, 0, g.slotIdx);
+  }
+
+  // === PASS 4: Crystal-Clear Interactive Turquoise Water Surface ===
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.useProgram(waterProg);
+  gl.uniformMatrix4fv(waterU.uViewProj, false, viewProjMat);
+  gl.uniform3f(waterU.uCamPos, camPos[0], camPos[1], camPos[2]);
+  gl.uniform3f(waterU.uSunDir, SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]);
+  gl.uniform1f(waterU.uTime, simTime);
+  gl.uniform4fv(waterU.uRipples, rippleData);
+  gl.bindVertexArray(MESH.water.vao);
+  gl.drawElements(gl.TRIANGLES, MESH.water.count, MESH.water.indexType, 0);
+
+  // === PASS 5: Translucent FX (Waterfall, Rainbow, Ice Cubes, Glass Rails, Droplets, Bubbles, Motes) ===
+  gl.useProgram(fxProg);
+  gl.uniformMatrix4fv(fxU.uViewProj, false, viewProjMat);
+  gl.uniform3f(fxU.uCamPos, camPos[0], camPos[1], camPos[2]);
+  gl.uniform3f(fxU.uSunDir, SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]);
+  gl.uniform1f(fxU.uTime, simTime);
+
+  // Tempered Aquarium Glass Railing Panels
+  for (const r of GLASS_RAILS) {
+    M4.identity(modelMat);
+    M4.translate(modelMat, r.pos[0], r.pos[1], r.pos[2]);
+    M4.rotateY(modelMat, r.yaw);
+    drawFXMesh(MESH.glassPanel, modelMat, 4, [0.85, 0.96, 1.0, 0.42]);
+  }
+
+  // Cascading Sunlit Waterfall Ribbon
+  M4.identity(modelMat);
+  drawFXMesh(MESH.waterfall, modelMat, 2, [0.9, 0.98, 1.0, 0.82 + clamp(rainbowTimer * 0.05, 0, 0.18)]);
+
+  // Optical Sunlit Rainbow Arc in the Waterfall Mist!
+  const rbAlpha = clamp(rainbowTimer * 0.25, 0, 1) * smoothstep(0, 1.2, rainbowTimer);
+  if (rbAlpha > 0.01) {
+    M4.identity(modelMat);
+    M4.translate(modelMat, -0.95, 0.15, -2.05);
+    M4.rotateY(modelMat, 0.32);
+    M4.scale(modelMat, 1.15, 1.05, 1.0);
+    drawFXMesh(MESH.rainbow, modelMat, 3, [1, 1, 1, rbAlpha]);
+  }
+
+  // Translucent Ice Cubes inside the Fish Bucket
+  const jiggleZ = Math.sin(bucketJiggleTime * 34) * 0.075 * bucketShake;
+  const jiggleX = Math.cos(bucketJiggleTime * 29) * 0.055 * bucketShake;
+  for (const o of bucketIceOffsets) {
+    M4.identity(modelMat);
+    M4.translate(modelMat, BUCKET_POS[0], BUCKET_POS[1], BUCKET_POS[2]);
+    M4.rotateY(modelMat, 0.42);
+    M4.rotateX(modelMat, 0.06 + jiggleX);
+    M4.rotateZ(modelMat, jiggleZ);
+    M4.translate(modelMat, o[0], o[1], o[2]);
+    M4.rotateY(modelMat, o[3]);
+    M4.rotateX(modelMat, 0.25);
+    drawFXMesh(MESH.ice, modelMat, 0, [0.72, 0.92, 1.0, 0.72]);
+  }
+
+  // Interactive Sliding Ice Cubes on Rock / Pool
+  for (const ic of slidingIces) {
+    const melt = clamp(ic.life / 3.0, 0, 1);
+    M4.identity(modelMat);
+    M4.translate(modelMat, ic.x, ic.y, ic.z);
+    M4.rotateY(modelMat, ic.yaw);
+    M4.scale(modelMat, melt, melt, melt);
+    drawFXMesh(MESH.ice, modelMat, 0, [0.74, 0.94, 1.0, 0.76 * melt]);
+  }
+
+  // 3D Droplets, Iridescent Bubbles & Warm Golden Sun-Motes
+  for (const pt of particles) {
+    const fade = clamp(pt.life / pt.maxLife, 0, 1);
+    const sc = pt.size * (pt.type === 'bubble' ? (0.65 + (1 - fade) * 0.45) : (0.4 + fade * 0.65));
+    M4.identity(modelMat);
+    M4.translate(modelMat, pt.x, pt.y, pt.z);
+    M4.scale(modelMat, sc, sc, sc);
+    if (pt.type === 'drop') {
+      drawFXMesh(MESH.droplet, modelMat, 0, [pt.col[0], pt.col[1], pt.col[2], 0.85 * fade]);
+    } else if (pt.type === 'bubble') {
+      drawFXMesh(MESH.bubble, modelMat, 1, [pt.col[0], pt.col[1], pt.col[2], 0.88 * Math.min(1, fade * 2.2)]);
+    } else {
+      drawFXMesh(MESH.droplet, modelMat, 5, [pt.col[0], pt.col[1], pt.col[2], 0.85 * Math.sin(fade * Math.PI)]);
+    }
+  }
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+// ============================================================================
+// 13. MAIN LOOP
+// ============================================================================
+let simTime = 0;
+let lastTS = performance.now();
+
+// Seed a gentle opening water ripple so the pool shimmers immediately
+addRipple(0.72, -0.25, 0.55);
+addRipple(-1.35, -2.35, 0.45);
+
+function frame(ts) {
+  const dt = clamp((ts - lastTS) * 0.001, 0.001, 0.05);
+  lastTS = ts;
+  simTime += dt;
+
+  updateCamera(dt);
+  updateWorld(dt);
+  updatePenguins(dt);
+  renderScene();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
